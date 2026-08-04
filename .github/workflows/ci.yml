@@ -1,0 +1,131 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test
+        run: go test ./... -count=1
+
+      # Separate step because it catches a different class of defect and the
+      # failure should say which one. Two concurrency defects in tui/ were caught
+      # only here.
+      - name: test -race
+        run: go test -race ./... -count=1
+
+      # The suite is green far more often than the system works: of the seven
+      # defects found in the first live-run round, four were invisible to it and
+      # one was found only by the demo script. So CI runs the binary.
+      #
+      # --fake needs no credentials, no network and no money, and the rule is that
+      # anything reachable with --fake stays reachable with --fake. This step is
+      # what enforces it.
+      - name: end-to-end (--fake, no credentials)
+        run: |
+          go build -o ./bin/quarry ./cmd/quarry
+          ./bin/quarry run --fake --quiet --cap 0.25 --depth 2 \
+            "What does it cost to run a GPU cluster for a year, how does that scale with utilisation, and what dominates the bill?"
+          rec=$(ls -1 quarry-run-*.json | head -1)
+          ./bin/quarry show "$rec"
+          ./bin/quarry replay "$rec"
+
+      # P8 is the load-bearing claim of the whole system: a record reproduces
+      # byte-for-byte with no model access. The degenerate cases are where it
+      # broke — a cap so small the root is priced out, and a deadline that gaps
+      # every node — so both are asserted rather than assumed.
+      # P8 is the load-bearing claim of the whole system: a record reproduces
+      # byte-for-byte with no model access. The degenerate cases are where it
+      # broke — a cap so small the root is priced out, and a deadline that gaps
+      # every node — so both are asserted rather than assumed.
+      #
+      # EACH CASE ASSERTS THE SHAPE IT CLAIMS TO PRODUCE. The first version of this
+      # step ran the deadline case against a single-clause statement, which the fake
+      # planner declines to split: it produced one node and ZERO gaps, so the step
+      # passed for 154ms without ever touching the time-truncation path it exists to
+      # cover. A degenerate-case test that does not verify it reached the degenerate
+      # case is the same class of lie as a green suite over a broken binary.
+      - name: replay holds on the degenerate cases (P8)
+        run: |
+          set -e
+
+          # gaps <record> — prints "<gaps> <unfunded> <nodes>" from a record.
+          shape() {
+            python3 -c "
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          o=r['Outcomes']
+          gaps=sum(1 for x in o if x.get('Gap'))
+          print(gaps, len(o))
+          " "$1"
+          }
+
+          # Case 1 — SPEND: a cap below the floor prices out the root itself. No gaps at
+          # all (only time is a gap, §3.1), which is exactly why this case was refused as
+          # unreplayable once.
+          rm -f quarry-run-*.json
+          # A truncated run may exit non-zero by design (an empty answer is exit 1), so
+          # the run's status is not the assertion — the replay and the shape are.
+          ./bin/quarry run --fake --quiet --cap 0.000001 --depth 2 "Probe the spend floor." || true
+          rec=$(ls -1 quarry-run-*.json 2>/dev/null | head -1)
+          if [ -z "$rec" ]; then echo "no record written for the spend case"; exit 1; fi
+          ./bin/quarry replay "$rec"
+
+          # Case 2 — TIME: latency per call exceeds the whole deadline, so every node
+          # gaps. The statement is multi-clause deliberately, because the fake planner
+          # declines to split a short one and a single node cannot demonstrate a gapped
+          # subtree. Robust on a slow runner: more pressure means more gaps, never fewer.
+          rm -f quarry-run-*.json
+          ./bin/quarry run --fake --quiet --cap 1.00 --deadline 300ms --fake-latency 400ms \
+            --depth 2 "How much does storage cost, how does it scale, and what dominates the bill?" || true
+          rec=$(ls -1 quarry-run-*.json 2>/dev/null | head -1)
+          if [ -z "$rec" ]; then echo "no record written for the deadline case"; exit 1; fi
+          read gaps nodes < <(shape "$rec")
+          echo "deadline case: $gaps gaps of $nodes nodes"
+          if [ "$gaps" -lt 1 ]; then
+            echo "this case must produce at least one GAP or it is not testing time truncation"
+            exit 1
+          fi
+          ./bin/quarry replay "$rec"
+
+      - name: the demo runs end to end
+        run: QUARRY_DEMO_NOPAUSE=1 ./demo.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      # .golangci.yml is a v2 config, so this needs a v2 golangci-lint whose own
+      # Go build is at least the module's go directive. Pinned rather than
+      # "latest", which has resolved to a v1.x binary that cannot parse it.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2

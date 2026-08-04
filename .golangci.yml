@@ -1,0 +1,42 @@
+version: "2"
+
+# Report EVERY finding. The defaults (max-issues-per-linter: 50, max-same-issues: 3)
+# silently truncate, which is the worst failure mode for a gate: the first run here
+# said "51 issues" when there were 96, and a fix-them-all pass driven by that number
+# would have declared itself finished with 45 left.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - misspell
+    - revive
+    - unconvert
+    - prealloc
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+        - name: package-comments
+          disabled: false
+
+  exclusions:
+    rules:
+      # Test files construct partial fixtures on purpose — a record with gaps, a
+      # plan that does not fit — so unchecked errors and unpreallocated slices are
+      # the point rather than an oversight.
+      - path: _test\.go
+        linters: [errcheck, prealloc]
+
+formatters:
+  enable:
+    - gofmt

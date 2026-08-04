@@ -1,0 +1,24 @@
+# Binaries
+/bin/
+/quarry
+*.exe
+
+# Test and coverage output
+*.out
+coverage.*
+
+# Run records. Named by content hash and written to the working directory by
+# `quarry run`, so they accumulate fast. They also carry model output and real
+# cost data from live runs, which is not what a public repo is for — a record
+# worth keeping belongs in a gist or an issue attachment, deliberately.
+quarry-run-*.json
+tampered.json
+
+# demo.sh scratch (it builds into /tmp by default, but honour an override)
+/demo-out/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
