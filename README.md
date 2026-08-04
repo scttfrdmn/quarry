@@ -6,13 +6,16 @@ Takes a research-shaped problem, rewrites it into sub-problems dispatched to
 independent agents, recurses to a bounded limit, and returns an answer together
 with a record of how it was produced and how much to trust it.
 
-**Status:** steps 1-9 of the build order are done — planner, solver, reducer,
-verifiers, run record with byte-identical replay, claim extraction, stability,
-cost estimation and adversarial passes, plus a CLI and a live tree view. Step 10
-(agate integration) is in progress. See `CLAUDE.md` for the working brief and
-`docs/design.md` for the design, which is the source of truth.
+**Status:** steps 1-9 of the build order (`docs/design.md` §11) are done — planner,
+solver, reducer, verifiers, run record with byte-identical replay, claim
+extraction, stability, cost estimation and adversarial passes, plus a CLI and a
+live tree view. Step 10 (agate integration) is in progress.
 
-Tracked in GitHub issues and milestones rather than in markdown.
+Everything else — what is broken, what is next, what is blocked and on what — is
+tracked in [issues](https://github.com/scttfrdmn/quarry/issues) and
+[milestones](https://github.com/scttfrdmn/quarry/milestones) rather than in
+markdown. `docs/design.md` is the design and the source of truth; `CLAUDE.md` is
+the coding standards; `CONTRIBUTING.md` is how to work on it.
 
 **Maturity (agate matrix):** Seam.
 

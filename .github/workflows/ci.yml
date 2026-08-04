@@ -59,10 +59,6 @@ jobs:
       # byte-for-byte with no model access. The degenerate cases are where it
       # broke — a cap so small the root is priced out, and a deadline that gaps
       # every node — so both are asserted rather than assumed.
-      # P8 is the load-bearing claim of the whole system: a record reproduces
-      # byte-for-byte with no model access. The degenerate cases are where it
-      # broke — a cap so small the root is priced out, and a deadline that gaps
-      # every node — so both are asserted rather than assumed.
       #
       # EACH CASE ASSERTS THE SHAPE IT CLAIMS TO PRODUCE. The first version of this
       # step ran the deadline case against a single-clause statement, which the fake
@@ -74,7 +70,7 @@ jobs:
         run: |
           set -e
 
-          # gaps <record> — prints "<gaps> <unfunded> <nodes>" from a record.
+          # shape <record> — prints "<gaps> <nodes>" from a record.
           shape() {
             python3 -c "
           import json,sys

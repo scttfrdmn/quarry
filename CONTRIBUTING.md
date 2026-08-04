@@ -2,7 +2,7 @@
 
 ## Read the design doc first
 
-`docs/design.md` is the source of truth. `CLAUDE.md` is the operating summary.
+`docs/design.md` is the source of truth. `CLAUDE.md` is the coding standards.
 Where they disagree, the design doc wins — and say so in the PR rather than
 quietly diverging.
 

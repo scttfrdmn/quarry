@@ -6,10 +6,12 @@ import (
 	"strings"
 )
 
-// Claim extraction and equivalence (build step 6, §7). THE highest-risk unbuilt
-// piece: without claim-level equivalence, "these runs agree" is a percentage
-// attached to vibes, and everything in §7 (replicate independence, stability,
-// the citation receipt) assumes it works.
+// Claim extraction and equivalence (build step 6, §7). THE highest-risk piece:
+// without claim-level equivalence, "these runs agree" is a percentage attached to
+// vibes, and everything in §7 (replicate independence, stability, the citation
+// receipt) assumes it works. Built mechanically here and metered behind
+// ClaimComparator in equiv.go; what remains wrong with the splitter is measured
+// on a live record in the tracking issue rather than guessed at here.
 //
 // What lives here is a deliberately MECHANICAL spike — no model, no network, in
 // keeping with the no-AWS/no-LLM discipline of steps 1-7. It splits a result's
