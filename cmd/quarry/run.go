@@ -166,8 +166,17 @@ func wireSeams(ctx context.Context, e *quarry.Executor, fake bool, model, region
 	if fake {
 		fp := &provider.FakeProvider{Latency: latency, Now: time.Now}
 		e.Planner = provider.FakePlanner{}
-		e.Solver = quarry.ProviderSolver{Provider: fp, Model: "fake"}
+		// BudgetedSolver in the fake branch too, not only the live one. The whole point
+		// of --fake is that a path reachable there stays reachable there; wiring the
+		// unbudgeted solver here would leave P9's spend-site half exercised only by a run
+		// that costs money.
+		e.Solver = provider.BudgetedSolver{Provider: fp, Model: "fake"}
 		e.Reducer = quarry.ConcatReducer{Sep: "\n"}
+		// Keyed on the bare STATEMENT while the solver now sends a wrapped prompt, so the
+		// estimate understates the halo by the preamble. Advisory either way (P4) — it
+		// sizes admission and is not served as an answer — and the alternative is worse:
+		// pricing the real prompt here would duplicate leafPrompt's construction in a
+		// second place, where the two could drift apart unnoticed.
 		e.Estimate = func(p quarry.Problem) quarry.Units { return fp.Estimate(p.Statement, "fake") }
 		return nil
 	}
@@ -191,7 +200,10 @@ func wireSeams(ctx context.Context, e *quarry.Executor, fake bool, model, region
 		return fmt.Errorf("build bedrock provider (is AWS_PROFILE set?): %w", err)
 	}
 	e.Planner = provider.NewBedrockPlanner(p, model)
-	e.Solver = quarry.ProviderSolver{Provider: p, Model: model}
+	// BudgetedSolver, not ProviderSolver: the leaf is the only thing that spends money,
+	// so it is where P9 has to hold. Its allocation reaches the model as a word budget
+	// and as a token ceiling sized from this price sheet (provider/solver.go).
+	e.Solver = provider.BudgetedSolver{Provider: p, Model: model}
 	// Planner and reducer are DIFFERENT agents by design (§2): the reducer must see what
 	// returned without inheriting the priors that produced the split. Same provider,
 	// separate call, separate prompt.

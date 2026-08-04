@@ -87,11 +87,32 @@ const (
 )
 
 // Complete answers deterministically from the prompt alone.
-func (f *FakeProvider) Complete(ctx context.Context, prompt, model string, _ quarry.Scope) (quarry.Sample, error) {
+func (f *FakeProvider) Complete(ctx context.Context, prompt, model string, scope quarry.Scope) (quarry.Sample, error) {
+	return f.CompleteBounded(ctx, prompt, model, scope, 0)
+}
+
+// CompleteBounded is Complete with an output ceiling, so the budget-conditioned leaf
+// path (BudgetedSolver) is reachable under --fake rather than live-only.
+//
+// That matters here more than it would elsewhere. The rule is that anything reachable
+// with --fake stays reachable with --fake, and a Budgeter the fake did not implement
+// would have made the CLI's fake branch fall back to the unbudgeted solver — so the
+// path would be exercised only by a run that costs money, which is how three replay
+// defects previously survived.
+//
+// The ceiling clamps the SYNTHETIC token count, so a bounded fake call is genuinely
+// cheaper than an unbounded one and admission control sees the difference. The fake's
+// content length is unaffected: it is a hash-derived sentence, not generated text, and
+// truncating it to match would corrupt the one thing the fake is careful about — that
+// its answer is one extractable claim (see fakeAnswer).
+func (f *FakeProvider) CompleteBounded(ctx context.Context, prompt, model string, _ quarry.Scope, maxOut int32) (quarry.Sample, error) {
 	if err := f.wait(ctx, prompt); err != nil {
 		return quarry.Sample{}, err
 	}
 	in, out := fakeTokens(prompt)
+	if maxOut > 0 && out > int(maxOut) {
+		out = int(maxOut)
+	}
 	now := time.Time{}
 	if f.Now != nil {
 		now = f.Now()
@@ -118,6 +139,33 @@ func (f *FakeProvider) Complete(ctx context.Context, prompt, model string, _ qua
 func (f *FakeProvider) Estimate(prompt, _ string) quarry.Units {
 	in, out := fakeTokens(prompt)
 	return f.price(in, out)
+}
+
+// Ceiling prices a ceiling off the fake's own output rate, so --fake exercises the
+// same code path a live run takes rather than a stub of it.
+//
+// AND IT IS NOT A SMALL LIVE CEILING, in the specific way that keeps biting. The
+// fake's synthetic output is 30-130 tokens (fakeTokens) while MinLeafOutputTokens is
+// 128, so on a fake run the ceiling is essentially never the binding constraint: the
+// clamp path runs, the truncation path almost never does. A change to how truncation
+// behaves needs a live run, or a test that constructs the ceiling directly — reading a
+// green --fake run as evidence that bounding works is the error this comment exists to
+// prevent.
+func (f *FakeProvider) Ceiling(_ string, spend quarry.Units) int32 {
+	if !spend.Limited() {
+		return 0
+	}
+	pout := f.PerKTokenOut
+	if pout == 0 {
+		pout = DefaultFakeOutPerKTok
+	}
+	if pout <= 0 {
+		return 0
+	}
+	// price() charges pout per 1000 tokens against micro-units, so inverting it is
+	// (spend/1e6)/pout*1000 — the same arithmetic run backwards, not a second model.
+	tokens := float64(spend) / 1e6 / pout * 1000
+	return clampCeiling(tokens)
 }
 
 func (f *FakeProvider) wait(ctx context.Context, prompt string) error {
@@ -439,5 +487,6 @@ func cleanSplit(stmt, sep string, max int) []string {
 
 var (
 	_ quarry.Provider = (*FakeProvider)(nil)
+	_ Budgeter        = (*FakeProvider)(nil)
 	_ quarry.Planner  = FakePlanner{}
 )

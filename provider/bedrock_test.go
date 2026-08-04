@@ -23,13 +23,22 @@ type fakeConverser struct {
 	inTok, out  int32
 	err         error
 	lastModelID string
-	calls       int
+	// lastMaxTokens is a POINTER so "no ceiling was sent" is distinguishable from "a
+	// ceiling of zero was sent". Absence is not zero, and this is the field where the
+	// difference is the whole assertion: maxOut 0 must leave InferenceConfig unset so
+	// the model's own default applies.
+	lastMaxTokens *int32
+	calls         int
 }
 
 func (f *fakeConverser) Converse(_ context.Context, in *bedrockruntime.ConverseInput, _ ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error) {
 	f.calls++
 	if in.ModelId != nil {
 		f.lastModelID = *in.ModelId
+	}
+	f.lastMaxTokens = nil
+	if in.InferenceConfig != nil {
+		f.lastMaxTokens = in.InferenceConfig.MaxTokens
 	}
 	if f.err != nil {
 		return nil, f.err
@@ -109,6 +118,54 @@ func TestUnpricedModelCostsZeroNotCrash(t *testing.T) {
 	}
 	if s.Cost != 0 {
 		t.Errorf("an unpriced model prices at zero, got %s", s.Cost)
+	}
+}
+
+// ------------------------------------------------------- CompleteBounded (P9, §2)
+
+func TestCompleteBoundedSendsTheCeiling(t *testing.T) {
+	// The half of P9-at-the-leaf that actually BINDS. A prompt asking for brevity is a
+	// request the model may decline; InferenceConfig.MaxTokens is not.
+	fc := &fakeConverser{reply: "short", inTok: 10, out: 10}
+	p := testProvider(fc)
+	if _, err := p.CompleteBounded(context.Background(), "q", testModel, quarry.Scope{}, 256); err != nil {
+		t.Fatal(err)
+	}
+	if fc.lastMaxTokens == nil {
+		t.Fatal("CompleteBounded must set InferenceConfig.MaxTokens")
+	}
+	if *fc.lastMaxTokens != 256 {
+		t.Errorf("want the ceiling it was given, got %d", *fc.lastMaxTokens)
+	}
+}
+
+func TestCompleteBoundedZeroMeansTheModelDefault(t *testing.T) {
+	// Absence is not zero. maxOut 0 is MaxTokens' existing convention for "let the
+	// model default apply", so it must leave InferenceConfig UNSET rather than send a
+	// zero-token cap — which Bedrock would either reject or honour, and both are wrong.
+	fc := &fakeConverser{reply: "x", inTok: 10, out: 10}
+	p := testProvider(fc)
+	if _, err := p.CompleteBounded(context.Background(), "q", testModel, quarry.Scope{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if fc.lastMaxTokens != nil {
+		t.Errorf("maxOut 0 must send no ceiling at all, sent %d", *fc.lastMaxTokens)
+	}
+}
+
+func TestCompleteStillHonoursTheEndpointMaxTokens(t *testing.T) {
+	// Complete now delegates to CompleteBounded, so this asserts the delegation did not
+	// quietly drop the field-level ceiling. The planner and the reducer have no
+	// allocation of their own and reach the provider through Complete, so they are the
+	// callers this protects.
+	fc := &fakeConverser{reply: "x", inTok: 10, out: 10}
+	p := testProvider(fc)
+	p.MaxTokens = 1024
+	if _, err := p.Complete(context.Background(), "q", testModel, quarry.Scope{}); err != nil {
+		t.Fatal(err)
+	}
+	if fc.lastMaxTokens == nil || *fc.lastMaxTokens != 1024 {
+		t.Errorf("Complete must still apply the endpoint MaxTokens, got %v", fc.lastMaxTokens)
 	}
 }
 

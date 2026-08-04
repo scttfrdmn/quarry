@@ -59,6 +59,12 @@ type BedrockProvider struct {
 	Prices map[string]Pricing
 
 	// MaxTokens caps generation per call. Zero lets the model default apply.
+	//
+	// ENDPOINT-LEVEL, and therefore the wrong instrument for a leaf: it is one value
+	// for every call, while sibling leaves funded differently need different ceilings
+	// (P9). It still applies to the calls that have no allocation of their own — the
+	// planner's and the reducer's. A per-node ceiling comes through CompleteBounded,
+	// which BudgetedSolver sizes from the node's allocation (solver.go).
 	MaxTokens int32
 
 	// EstInputTokens / EstOutputTokens size the pre-call admission estimate (§4).
@@ -93,7 +99,18 @@ func NewBedrockProvider(ctx context.Context, region string, prices map[string]Pr
 // token cost (§2). The scope is accepted for interface conformance and P6
 // discipline upstream; Bedrock itself is scope-blind, so entitlement is enforced
 // before the call reaches here, not by it.
-func (b *BedrockProvider) Complete(ctx context.Context, prompt, model string, _ quarry.Scope) (quarry.Sample, error) {
+//
+// Delegates at the endpoint-level MaxTokens, so the planner and reducer paths behave
+// exactly as before this became two methods.
+func (b *BedrockProvider) Complete(ctx context.Context, prompt, model string, scope quarry.Scope) (quarry.Sample, error) {
+	return b.CompleteBounded(ctx, prompt, model, scope, b.MaxTokens)
+}
+
+// CompleteBounded is Complete with an explicit per-call output ceiling — the Budgeter
+// half of P9 that actually binds (solver.go). maxOut of 0 means the model's own
+// default, which is MaxTokens' existing convention: an absent ceiling, not a
+// zero-token one.
+func (b *BedrockProvider) CompleteBounded(ctx context.Context, prompt, model string, _ quarry.Scope, maxOut int32) (quarry.Sample, error) {
 	in := &bedrockruntime.ConverseInput{
 		ModelId: aws.String(model),
 		Messages: []brtypes.Message{{
@@ -101,8 +118,8 @@ func (b *BedrockProvider) Complete(ctx context.Context, prompt, model string, _ 
 			Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: prompt}},
 		}},
 	}
-	if b.MaxTokens > 0 {
-		in.InferenceConfig = &brtypes.InferenceConfiguration{MaxTokens: aws.Int32(b.MaxTokens)}
+	if maxOut > 0 {
+		in.InferenceConfig = &brtypes.InferenceConfiguration{MaxTokens: aws.Int32(maxOut)}
 	}
 
 	out, err := b.Client.Converse(ctx, in)
@@ -113,6 +130,15 @@ func (b *BedrockProvider) Complete(ctx context.Context, prompt, model string, _ 
 	text := extractText(out)
 	inTok, outTok := usage(out)
 	cost := b.price(model, inTok, outTok)
+
+	// TODO(§8): out.StopReason is brtypes.StopReasonMaxTokens when the ceiling cut the
+	// answer off, so a truncated leaf is DETECTABLE here and is currently dropped. It
+	// belongs on the record — an answer that stopped mid-sentence is a different claim
+	// from one that finished — but neither Sample nor NodeOutcome has a field for it,
+	// and adding a hashed field means every existing record stops hashing to its own
+	// RunID. Carried by the reserve-measurement issue, which already accepts exactly
+	// one hashed-field change; two independent ones in two commits would invalidate the
+	// same records twice.
 
 	now := time.Time{}
 	if b.Now != nil {
@@ -149,6 +175,48 @@ func (b *BedrockProvider) price(model string, inTok, outTok int) quarry.Units {
 	return quarry.FromFloat(dollars)
 }
 
+// Ceiling prices an output-token ceiling from a spend allowance, inverting the same
+// sheet price uses — the one Units<->tokens conversion in the system, and the reason
+// the ceiling is sized here rather than in the core (Go rule 4 forbids the core a
+// price sheet).
+//
+// Returns 0 — "the model's own default" — in the two cases where no honest number
+// exists: an unlimited allowance, and a model absent from the sheet. The second
+// matches how price already treats a missing sheet, and matters more than it looks: an
+// unpriced model would otherwise divide by a zero rate and cap generation on a number
+// nothing supports. Absence stays absence rather than becoming a value.
+//
+// Prices output only. Input is the halo, already spent by the time a ceiling could
+// bound anything, so charging the ceiling for it would shrink every answer to pay for
+// a prompt that was never optional.
+func (b *BedrockProvider) Ceiling(model string, spend quarry.Units) int32 {
+	if !spend.Limited() {
+		return 0
+	}
+	p, ok := b.Prices[model]
+	if !ok || p.OutputPerMTok <= 0 {
+		return 0
+	}
+	// spend is micro-units; OutputPerMTok is per 1e6 tokens. tokens =
+	// (spend/1e6) / (rate/1e6) = spend/rate, which keeps the arithmetic in one step
+	// and out of float round-trips through Units.
+	tokens := float64(spend) / p.OutputPerMTok
+	return clampCeiling(tokens)
+}
+
+// clampCeiling bounds a priced token count into the usable range. Shared by every
+// Budgeter so the two implementations cannot disagree about what a ceiling may be —
+// they already disagree about price, which is the only thing they should.
+func clampCeiling(tokens float64) int32 {
+	if tokens < float64(MinLeafOutputTokens) {
+		return MinLeafOutputTokens
+	}
+	if tokens > float64(MaxLeafOutputTokens) {
+		return MaxLeafOutputTokens
+	}
+	return int32(tokens)
+}
+
 func extractText(out *bedrockruntime.ConverseOutput) string {
 	if out == nil || out.Output == nil {
 		return ""
@@ -179,7 +247,10 @@ func usage(out *bedrockruntime.ConverseOutput) (in, gen int) {
 	return in, gen
 }
 
-var _ quarry.Provider = (*BedrockProvider)(nil)
+var (
+	_ quarry.Provider = (*BedrockProvider)(nil)
+	_ Budgeter        = (*BedrockProvider)(nil)
+)
 
 // Family returns the provider family of a Bedrock model ID — the segment after
 // any cross-region prefix (us./global.) and before the model name. "us.anthropic.
