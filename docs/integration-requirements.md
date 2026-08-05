@@ -56,6 +56,19 @@ violates one can be rejected by name.
    places. quarry's verification receipt and content-hash have no home in it as-is
    — extending it is a real ask, not a field we can just populate. [§8 — see §3]
 
+4. **The self-metering pattern generalizes — it is not an agate peculiarity.**
+   Finding 1 was recorded as a fact about one Lambda. It turned out to be the
+   shape of *every* gateway quarry talks to: the twin gateways (bucktooth in Go,
+   rustynail in Rust) serve an OpenAI-compatible `POST /v1/chat/completions`,
+   run fallback chains, and meter their own calls, which is finding 1 again with
+   a different wire shape. So `OpenAIProvider` is **`ChokepointProvider`'s
+   sibling, not `BedrockProvider`'s** — the axis that matters is not the vendor
+   or the protocol but **who prices the call**. Where the remote prices, quarry
+   debits what it is told and refuses to guess; where quarry holds the sheet
+   (`BedrockProvider`) it prices locally. Getting that axis wrong is how a local
+   price sheet ends up in front of a fallback chain, producing a number that is
+   confidently wrong rather than absent. [§3 — see §1]
+
 ---
 
 ## 1. Admission / the chokepoint  [§3, §3.1, P4]
@@ -121,6 +134,67 @@ model per node — not `auto`** — since `auto` routing is observable but
 non-deterministic, which breaks P8 replay. **Blocked:** agate must vend a
 `lambda:InvokeFunctionUrl` role for server-to-server callers (none exists today;
 the browser uses Cognito). This is the single item blocking `ChokepointProvider`.
+
+### A second self-metering gateway: the OpenAI-compatible wire  [#10]
+
+The twin gateways serve `POST /v1/chat/completions`. Everything above about the
+chokepoint applies unchanged — the remote admits, calls and meters in one
+request (§0 finding 4) — so only the differences are recorded here.
+
+**Two extension fields, and quarry CONSUMES this extension rather than defining
+it.** Standard `/v1` carries token counts and no cost, so a gateway that meters
+has to say so somewhere. Both names are written into the twins' gateway issue;
+they are not quarry's to declare, and the shapes below are what quarry reads:
+
+| Field | Type | Why it cannot be derived locally |
+|---|---|---|
+| `usage.cost_micros` | `int64`, **nullable** | The gateway runs a fallback chain, so quarry does not know which model served the call, let alone its rate |
+| `served_model` | string | The model that *actually* answered — knowable only to the router that chose it |
+
+- **Integer micro-units at the wire, 1:1 with `Units`.** This deliberately
+  sidesteps the conversion the agate seam had to specify carefully (§1, "unit
+  mapping": `round(usd × 1e6)`, never `int()`). Micro-units on both sides
+  *removes* the arithmetic rather than getting it right.
+- **`cost_micros` is nullable because absence and zero are different facts and
+  the difference is money.** A gateway serving from its own cache legitimately
+  reports `0`, and that is a real measurement to debit; a gateway that reports
+  nothing has told quarry nothing, and recording that as free makes the receipt
+  **false rather than merely imprecise** (§8). An unreported cost therefore
+  fails the call. `run.go` already makes the same call for an unpriced Bedrock
+  model — "an unpriced model records every call as free, which makes the cost
+  receipt a lie" — and this is that defect arriving from the other direction.
+- **A fallback substitution fails the call.** If `served_model` differs from the
+  pinned model, quarry does not record it under either name. A record naming a
+  model that did not produce the answer is not replayable, and the failure is
+  **invisible** — the record looks entirely faithful. Same reasoning as refusing
+  agate's `auto` (above), one layer further out: quarry refuses the alias at its
+  own end, so it must also refuse an answer that silently came from elsewhere.
+  **Absence of both `served_model` and the standard `model` also fails**, the
+  strict direction, because the alternative records quarry's own pinned model as
+  the producer on no evidence and that is indistinguishable in the record from a
+  call really served by it. Silence cannot be read as agreement (P8).
+- **The cap-breach signal is the one field read without a frozen agreement.**
+  The gateway issue specifies the two fields above and says nothing about how a
+  breach is signalled, so quarry reuses agate's `budget_exceeded` spelling as a
+  *proposal in code*. Until it is confirmed, a gateway that spells it
+  differently degrades to a transport fault — the safe direction under agate#265
+  C1, and not a silent one.
+- **What this costs: no output ceiling can be priced on this path.** Sizing a
+  token ceiling from a spend allowance means inverting a price sheet, which is
+  exactly what a self-metering remote forbids quarry from holding. So
+  `Ceiling` returns 0 ("the gateway's own default") always, `BudgetedSolver`'s
+  token-ceiling half does nothing here, and its prompt half degrades honestly to
+  "no stated length limit". **P9 holds at the plan gate and at admission; it
+  does not reach generation length on this path.** Closing that needs the
+  gateway to report a rate, or to accept a spend allowance and derive the
+  ceiling itself — the self-metering pattern applied one field further, and an
+  ask for the gateway issue rather than an invented local sheet.
+- **Admission uses a caller-stated flat prior, not a price sheet.** The
+  distinction is what keeps a pre-call number legal at all: quarry may not
+  *price* the call, but a caller who knows their own deployment may state
+  roughly what one runs. Zero means no prior, and then admission admits
+  everything and the cap binds after the fact on the actual — advisory by
+  construction, and nothing gates on it (P4).
 
 ### Minting the root ledger from outside the process  [#11, P9, P4]
 
@@ -479,12 +553,22 @@ emits no usage keys at all, because semconv would read a zero as a measured zero
 | Receipt `cost/meter.py` | Python + TS twin | emit the `receipt` event shape |
 | SPA | TypeScript, flat event stream | emit `RunEvent`s; no tree type today |
 | CLI | Go (deploy-plan only) | not relevant to runtime |
+| Twin gateways (admit+call+meter) | Go / Rust | **network only** — `POST /v1/chat/completions` + two extension fields (§1) |
 
 **Bottom line:** quarry integrates over the **network**, as a
 `ChokepointProvider` (Provider+Admitter fused) plus agate `RunEvent` emission,
 and owns its own OTel/RunRecord. There is no Go package to import and no shared
 IDL — the JSON shapes above are the contract, and they must be kept in lockstep
 by hand.
+
+**Which contracts quarry owns, and which it only consumes** — worth stating
+plainly because the two are maintained differently:
+
+| | Owner | quarry's obligation |
+|---|---|---|
+| agate request/response, receipt, `RunEvent` | agate | Track it. A change there breaks quarry silently; only §3's hand-kept notes catch it |
+| `usage.cost_micros`, `served_model` | the twins' gateway issue | **Consume, do not define.** Proposed there, read here; the cap-breach code is proposed *in code* and still unconfirmed |
+| `quarry run --events-json` (§6) | **quarry** | Version it and keep it compatible — the only protocol here whose breakage is quarry's fault |
 
 ---
 
