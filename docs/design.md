@@ -938,6 +938,20 @@ receipt — what was checked, by which oracle, pass rates, **and what remains un
 stability estimate with unstable claims flagged; the full tree and ledger; model IDs and versions;
 the point at which the verification regress terminated.
 
+**A receipt that does not add up is worse than no receipt**, so the rule for reading one is part
+of the contract and not left to the reader. The wire carries USD floats because agate prices in
+dollars, but **reconciliation happens in micro-units**: convert each row with `round(cost × 1e6)`,
+sum as integers, compare. Summing the floats does not work — each row is converted independently
+while the total is summed integrally first, so the error grows with the row count and no fixed
+tolerance is correct. Truncation in place of rounding is equally wrong, for the reason the
+chokepoint seam already documents: it loses the last micro-unit.
+
+The floats are still exact **per row** — each maps 1:1 back to its `Units` value — which is why
+this is a rule about summation rather than a defect in the projection. Learned late: the test
+asserting this invariant passed for the life of the file because its fixture summed `1 + 2 + 3`,
+which is exact in binary floating point (quarry#18, surfaced by a host integrator asking for a
+non-summing receipt as a *malformed-input* fixture — it is what an ordinary run emits).
+
 ## 8.1 Iteration: extend and refine
 
 A first run is usually a first stab. Because sub-problems are memoized (§6), a researcher can come

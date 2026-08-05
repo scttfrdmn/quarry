@@ -3,6 +3,7 @@ package quarry
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"strings"
 )
 
@@ -177,7 +178,19 @@ func RunEvents(r RunRecord, recordURL string, prov *Provenance) []RunEvent {
 	}
 
 	// The receipt itemises every node that spent, and its total is the record's
-	// total — see the ReceiptEvent doc on why rows are not leaves-only.
+	// total — see the ReceiptEvent doc on why rows are not leaves-only. Read it with
+	// ReceiptReconciles, not by summing the floats; #18 says why.
+	//
+	// THE SKIP AND THE TOTAL DISAGREE ABOUT Unlimited, and it is recorded rather than
+	// fixed. A row is skipped when !Limited, but TotalCost sums unconditionally, so an
+	// Unlimited cost would land in the total with no line explaining it — the very
+	// thing the ReceiptEvent doc forbids. It is UNREACHABLE today: every provider
+	// prices a Limited cost (bedrock.go price returns 0 for an unsheeted model,
+	// chokepoint takes the metered actual, fake prices from its own sheet), so only a
+	// test constructs one. Guarding here would be a branch no input reaches, and
+	// CLAUDE.md prefers a marked gap to a plausible guess.
+	// TODO(§8): if a provider ever returns an Unlimited cost, this is where the total
+	// stops being explicable, and TotalCost is the side that has to change.
 	rows := make([]ReceiptRow, 0, len(r.Outcomes))
 	for _, o := range r.Outcomes {
 		if !o.Cost.Limited() || o.Cost == 0 {
@@ -239,4 +252,42 @@ func unitsToUSD(u Units) float64 {
 		return 0
 	}
 	return float64(u) / 1e6
+}
+
+// USDToUnits converts a wire float back to micro-units — THE RULE FOR READING A
+// RECEIPT, and the reason it is exported (#18).
+//
+// Every value unitsToUSD emits is an exact 6-dp decimal, because Go writes the
+// shortest float64 that round-trips; so each row and the total agree with the ledger
+// to the micro-unit individually. What does NOT hold is that the rows SUM to the
+// total in float64: unitsToUSD divides each row by 1e6 separately and the errors
+// accumulate, while TotalCost sums integers and converts once. On a real 25-node run
+// the two differ by 1.4e-17, and quarry's own test missed it for a year because its
+// fixture used 1+2+3 — three values that happen to sum exactly in binary floating
+// point (§8, "a receipt that does not add up is worse than no receipt").
+//
+// So a consumer must come back to integers BEFORE summing. Two independent hosts in
+// two languages would otherwise each pick their own epsilon, and any epsilon is a
+// guess about tree size: the error grows with the number of rows.
+//
+// math.Round, NOT FromFloat, and this is not interchangeable. FromFloat truncates
+// (Units(f * 1e6)), which fails to round-trip 2884 of the first 200000 micro-unit
+// values — 0.000249 truncates to 248. It is the same defect provider.usdToUnits
+// already documents on the agate seam, where int() would desync the local debit from
+// the remote meter by one micro-unit.
+func USDToUnits(usd float64) Units {
+	return Units(math.Round(usd * 1e6))
+}
+
+// ReceiptReconciles reports whether a receipt's rows sum to its total, compared the
+// only way that is stable: in micro-units (#18).
+//
+// The twins' conformance corpus (#9) checks exactly this, in Go and in Rust, so the
+// rule lives here as code rather than as a sentence in a doc that each host reimplements.
+func ReceiptReconciles(r ReceiptEvent) bool {
+	var sum Units
+	for _, row := range r.Rows {
+		sum += USDToUnits(row.Cost)
+	}
+	return sum == USDToUnits(r.Total)
 }

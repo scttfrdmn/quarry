@@ -236,6 +236,34 @@ Two properties of agate's twin constrain quarry and are pinned by tests:
 the two pinned versions, the receipt rows and `cost_total` agree with quarry's
 ledger to the micro-unit, and `provenance` round-trips intact.
 
+**How to reconcile a receipt: in micro-units, never in floats.** That per-row
+agreement "to the micro-unit" is exact — `unitsToUSD` emits a 6-dp decimal and Go
+writes the shortest float64 that round-trips, so every `cost` and the `total` map
+1:1 back to a `Units` value. **The rows do not sum to the `total` in float64**, and
+that is arithmetic, not a bug in the emitter: each row is divided by `1e6`
+separately while `TotalCost()` sums integers and converts once, so the errors
+accumulate. A real 25-node run gives `0.08043700000000000849` against a total of
+`0.08043699999999999461`.
+
+So a consumer converts each value back with **`round(cost × 1e6)`** and compares
+`int64`. `quarry.USDToUnits` and `quarry.ReceiptReconciles` are exported for exactly
+this, so a host implements the rule rather than inventing one. Two constraints make
+this normative rather than advisory:
+
+- **`round`, not truncation.** `FromFloat` truncates and fails to round-trip 2884 of
+  the first 200000 micro-unit values (`0.000249` → `248`). It is the same defect
+  `provider.usdToUnits` already documents on the chokepoint seam, where `int()`
+  would desync the local debit from the remote meter.
+- **No float tolerance.** Any epsilon is a guess about tree size, because the error
+  grows with the row count. There is no correct constant.
+
+Found by bucktooth's consumer-side ask on quarry#9 (it requested a non-summing
+receipt as a *malformed-input* fixture; it is what quarry emits for an ordinary
+run). quarry's own test asserted this and passed for the whole life of the file,
+because its fixture summed `1 + 2 + 3` — exact in binary floating point. See #18 and
+`TestReceiptReconcilesOnRealCosts`, which carries a vacuity guard so a cleaner
+fixture cannot silently disarm it again.
+
 **Also (agate#265 C2):** `kind:"embedding"` exists in the Python receipt but not
 the TS SPA union, so an emitter using it produces events the SPA rejects. quarry
 emits only `kind:"llm"` today, so this does not bite — do not widen to

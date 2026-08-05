@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -74,30 +75,136 @@ func TestRunEventsOneModelEventPerDistinctVersion(t *testing.T) {
 	}
 }
 
+// liveCosts are the per-node micro-unit costs of the 25 spending nodes in the live
+// record quarry-run-72c970d2ef42.json — a $0.0804, 30-node Bedrock run.
+//
+// REAL COSTS, and that is the entire point of the fixture (#18). The version of this
+// test that shipped summed recTwoLeaves' FromFloat(1)/(2)/(3) in float64 and passed,
+// because 1+2+3 happens to be exact in binary floating point. These values are not:
+// summed as floats they give 0.08043700000000000849 against a total of
+// 0.08043699999999999461. A fixture cleaner than the real input cannot discover that
+// the real input breaks the invariant (CLAUDE.md).
+//
+// Worth recording, since it nearly repeated: a first probe of this used PLAUSIBLE
+// INVENTED costs and also passed. Only the actual values failed. The defect and the
+// check of the defect had the same blind spot.
+var liveCosts = []Units{13911, 3509, 1889, 1620, 1915, 3319, 1549, 1958, 3767,
+	2094, 1893, 2013, 5250, 1875, 2464, 2182, 9013, 2242, 2871, 5058,
+	2389, 3273, 1575, 1529, 1279}
+
+// recLiveCosts builds a record whose spending nodes carry liveCosts.
+func recLiveCosts() RunRecord {
+	outs := []NodeOutcome{{
+		NodeID: "n0", Problem: Problem{Statement: "root question"},
+		Content: "merged answer", Cost: 0,
+	}}
+	for i, c := range liveCosts {
+		outs = append(outs, NodeOutcome{
+			NodeID:  fmt.Sprintf("n0.%d", i),
+			Problem: Problem{Statement: fmt.Sprintf("part %d", i)},
+			Content: "answer", Cost: c,
+			Model: "claude", ModelVersion: "claude-v1",
+		})
+	}
+	return RunRecord{RunID: "live72c970d2ef42", Outcomes: outs}
+}
+
+func receiptOf(t *testing.T, r RunRecord) ReceiptEvent {
+	t.Helper()
+	var receipt ReceiptEvent
+	var found bool
+	for _, ev := range RunEvents(r, "", nil) {
+		if re, ok := ev.(ReceiptEvent); ok {
+			receipt, found = re, true
+		}
+	}
+	if !found {
+		t.Fatal("every run emits a receipt, even an empty one")
+	}
+	return receipt
+}
+
 func TestRunEventsReceiptTotalEqualsSumOfRows(t *testing.T) {
 	// A receipt that does not add up is worse than none (§8). Rows cover every
 	// spending node, reduce nodes included — not leaves only.
-	var receipt ReceiptEvent
-	for _, ev := range RunEvents(recTwoLeaves(), "", nil) {
-		if r, ok := ev.(ReceiptEvent); ok {
-			receipt = r
-		}
-	}
+	receipt := receiptOf(t, recTwoLeaves())
 	if len(receipt.Rows) != 3 {
 		t.Fatalf("all three spending nodes get a row, got %d", len(receipt.Rows))
 	}
-	var sum float64
 	for _, row := range receipt.Rows {
-		sum += row.Cost
 		if row.Kind != KindLLM {
 			t.Errorf("agate#265 C2: only kind %q may be emitted, got %q", KindLLM, row.Kind)
 		}
 	}
-	if sum != receipt.Total {
-		t.Errorf("rows sum %v must equal total %v", sum, receipt.Total)
+	if !ReceiptReconciles(receipt) {
+		t.Errorf("rows must sum to the total: rows %v, total %v", receipt.Rows, receipt.Total)
 	}
 	if receipt.Total != 6.0 {
 		t.Errorf("total must be the record's TotalCost, want 6.0, got %v", receipt.Total)
+	}
+}
+
+func TestReceiptReconcilesOnRealCosts(t *testing.T) {
+	// The invariant against costs a live run actually produced (#18). Summing these
+	// rows in float64 disagrees with the total by 1.4e-17, so this test fails the
+	// moment ReceiptReconciles stops converting to micro-units first.
+	receipt := receiptOf(t, recLiveCosts())
+	if len(receipt.Rows) != len(liveCosts) {
+		t.Fatalf("want a row per spending node, got %d of %d", len(receipt.Rows), len(liveCosts))
+	}
+
+	// The fixture is only load-bearing if float summation genuinely breaks on it —
+	// otherwise this test would pass under the defect it exists to catch, exactly as
+	// its predecessor did. Assert the trap is armed.
+	var naive float64
+	for _, row := range receipt.Rows {
+		naive += row.Cost
+	}
+	if naive == receipt.Total {
+		t.Fatal("VACUOUS: these costs sum exactly in float64, so this fixture cannot " +
+			"detect the defect — replace it with costs from a real record")
+	}
+
+	if !ReceiptReconciles(receipt) {
+		t.Errorf("rows must reconcile with the total in micro-units: float sum %.20f, total %.20f",
+			naive, receipt.Total)
+	}
+}
+
+func TestUSDToUnitsRoundsAndDoesNotTruncate(t *testing.T) {
+	// The rule the twins implement, and the one place FromFloat may NOT be substituted:
+	// it truncates, so 0.000249 would come back as 248 (#18). Same reasoning as
+	// provider.usdToUnits on the agate seam, where int() desyncs the debit by a
+	// micro-unit.
+	for _, u := range []Units{249, 251, 489, 493, 498, 502, 8_200_000} {
+		if got := USDToUnits(unitsToUSD(u)); got != u {
+			t.Errorf("wire round trip must be exact: %d -> %v -> %d", u, unitsToUSD(u), got)
+		}
+	}
+	// Every row of the live receipt round-trips, which is what makes per-row agreement
+	// with the ledger ("to the micro-unit", integration-requirements §5) a true claim.
+	for _, c := range liveCosts {
+		if got := USDToUnits(unitsToUSD(c)); got != c {
+			t.Errorf("live cost %d round-tripped to %d", c, got)
+		}
+	}
+}
+
+func TestReceiptReconcilesOnADegenerateReceipt(t *testing.T) {
+	// A zero-spend run and an empty record both emit a receipt, and both must
+	// reconcile — a host reading one may not have to special-case it (#9's corpus
+	// carries both). Absence of spending is not a broken receipt.
+	for name, r := range map[string]RunRecord{
+		"empty":      {RunID: "empty"},
+		"zero-spend": {RunID: "zero", Outcomes: []NodeOutcome{{NodeID: "n0", Content: "free", Cost: 0}}},
+	} {
+		receipt := receiptOf(t, r)
+		if len(receipt.Rows) != 0 {
+			t.Errorf("%s: a node that spent nothing gets no row, got %d", name, len(receipt.Rows))
+		}
+		if !ReceiptReconciles(receipt) {
+			t.Errorf("%s: a spendless receipt must still reconcile", name)
+		}
 	}
 }
 
