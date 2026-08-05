@@ -341,4 +341,132 @@ print(f"  ok: spend {spend['gaps']}g/{spend['unfunded']}u vs time "
       f"{time_['gaps']}g/{time_['unfunded']}u — same code, distinguishable cause")
 PY
 
+echo "== #11: the host mints the root ledger from outside the process"
+
+# THE ENVIRONMENT HALF IS ONLY REACHABLE FROM HERE, and that is why this section exists
+# rather than leaving #11 to cmd/quarry/hostcaps_test.go. A Go test passes a getenv
+# function — deliberately, so precedence is testable without mutating state the parallel
+# tests share — which means the wiring from the REAL environment to the real resolver is
+# exactly the seam a Go test cannot see. A resolver that read the right variables through
+# an os.Getenv nobody passed it would pass every unit test in the package.
+set +e
+QUARRY_CAP_MICROS=250000 QUARRY_SCOPE="lab=example,project=hydrology" QUARRY_DEPTH=2 \
+	"$Q" run --fake --quiet --events-json --out "$work/h11.json" "$Q3" \
+	>"$work/h11.ndjson" 2>/dev/null
+env_run=$?
+set -e
+[ "$env_run" = "0" ] || {
+	echo "FAIL: a cap set ONLY in the environment must satisfy host mode, got exit $env_run." >&2
+	echo "      A host exporting QUARRY_CAP_MICROS in a unit file or container spec HAS" >&2
+	echo "      chosen a cap; refusing it makes the environment level decorative (#11 D5)." >&2
+	exit 1
+}
+
+# D3 — the forgotten cap. Observed as an EXIT CODE from outside, because that is what a
+# supervisor branches on: a host that forgot the flag must be told, not handed a dollar.
+set +e
+"$Q" run --fake --quiet --events-json "anything" >"$work/nocap.out" 2>/dev/null
+nocap=$?
+set -e
+[ "$nocap" = "2" ] || {
+	echo "FAIL: --events-json with no explicitly-set cap must exit 2 (usage), got $nocap." >&2
+	echo "      The interactive default would spend a dollar nobody authorised (#11 D3)," >&2
+	echo "      and 1 would report a fixable omission as a quarry malfunction." >&2
+	exit 1
+}
+[ ! -s "$work/nocap.out" ] || {
+	echo "FAIL: the refused run wrote to stdout. Nothing ran, so a host has nothing to parse." >&2
+	exit 1
+}
+
+# NON-VACUITY FOR THE LINE ABOVE: the same invocation WITH a cap must succeed, or the
+# refusal could be coming from anything — the statement, --fake, the missing --out.
+set +e
+"$Q" run --fake --quiet --events-json --cap-micros 250000 --out "$work/withcap.json" \
+	"anything" >/dev/null 2>&1
+withcap=$?
+set -e
+[ "$withcap" = "0" ] || {
+	echo "FAIL: the same invocation with --cap-micros must succeed, got $withcap — the" >&2
+	echo "      refusal above is then not about the cap at all." >&2
+	exit 1
+}
+
+# The caps and scope a host minted must reach the RECORD, which is the citable artifact.
+# Read off the written file rather than off the stream: the record is what replays, and a
+# resolver feeding a run that recorded something else is the defect this catches (P8).
+python3 - "$work/h11.json" <<'PY'
+import json, sys
+
+rec = json.load(open(sys.argv[1]))
+
+# D1 — INTEGER MICRO-UNITS ACROSS THE BOUNDARY. Units is int64 and never float (Go rule
+# 3): apportionment uses largest-remainder distribution so shares sum exactly and two
+# replays of one tree cannot diverge. A float round-trip at this edge is what would break
+# that, so the assertion is on the exact integer and on its TYPE.
+spend = rec["Caps"]["Spend"]
+assert isinstance(spend, int), f"the spend cap must cross as an integer, got {type(spend)}"
+assert spend == 250000, f"want exactly 250000 micro-units from the environment, got {spend}"
+
+# D4/P6 — the scope tags reached the record, and therefore every cache key. quarry hashes
+# and propagates them; it does not interpret them. The authoritative narrowing is the
+# host's or IAM's and stays there.
+tags = rec["Problem"]["Scope"]["Tags"]
+assert tags.get("project") == "hydrology", f"the host's scope must reach the record: {tags}"
+assert tags.get("lab") == "example", tags
+
+# P2 — the depth BACKSTOP is recorded rather than inferred. A fact of the original
+# execution: the bound is only visible from the tree's geometry if some node hit it, which
+# is the third instance of that defect and why RunBounds exists.
+assert rec["Bounds"]["MaxDepth"] == 2, f"the environment's depth bound must be recorded: {rec['Bounds']}"
+
+# Non-vacuity: a single-node tree would satisfy all of the above while exercising none of
+# the apportionment that makes any of it worth asserting.
+assert len(rec["Outcomes"]) >= 2, f"the run must have decomposed, got {len(rec['Outcomes'])} nodes"
+
+print(f"  ok: {spend} micro-units, scope {sorted(tags)}, depth bound "
+      f"{rec['Bounds']['MaxDepth']}, {len(rec['Outcomes'])} nodes — all from the environment")
+PY
+
+# D2 — the absolute deadline, and the ONE THING IT DOES NOT YET BUY. --due populates
+# Caps.Due, which makes Caps.Deferrable() true and therefore §3.1's price control
+# reachable: a run not needed for three days can go to batch or off-peak at a discount.
+# Nothing prices off it yet, so this checks the denomination arrives — not that it was
+# cheaper, which would be asserting a build that has not happened.
+set +e
+QUARRY_DUE="2030-08-06T17:00:00Z" \
+	"$Q" run --fake --quiet --events-json --out "$work/due.json" "$Q3" >/dev/null 2>&1
+due_run=$?
+set -e
+[ "$due_run" = "0" ] || {
+	echo "FAIL: a due date alone must satisfy P9's at-least-one-cap, got exit $due_run." >&2
+	echo "      §3.1 makes time a first-class cap, not a lesser one." >&2
+	exit 1
+}
+python3 - "$work/due.json" <<'PY'
+import json, sys
+
+caps = json.load(open(sys.argv[1]))["Caps"]
+assert caps["Due"].startswith("2030-08-06T17:00:00"), f"the absolute due date must be recorded: {caps}"
+# DEFERRABLE IS Due SET AND Latency ZERO. A resolver that helpfully derived a latency from
+# the due date would record a due date and silently price the run as on-demand — the run
+# would look right and cost more.
+assert caps["Latency"] == 0, (
+    f"a due date must NOT imply a latency cap: {caps} — deferrability is what converts "
+    f"slack into money (§3.1), and a derived latency destroys it"
+)
+print("  ok: --due recorded with no derived latency, so the run is deferrable (§3.1)")
+PY
+
+# A refusal a host can actually hit: two spellings of one cap. Neither wins, because a
+# silent winner is how a run ships at a millionth of its intended cap with no error.
+set +e
+"$Q" run --fake --quiet --events-json --cap 1.00 --cap-micros 1000000 "anything" >/dev/null 2>&1
+both=$?
+set -e
+[ "$both" = "2" ] || {
+	echo "FAIL: --cap and --cap-micros together must exit 2, got $both" >&2
+	exit 1
+}
+
 echo "host contract ok"

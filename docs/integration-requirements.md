@@ -122,6 +122,69 @@ non-deterministic, which breaks P8 replay. **Blocked:** agate must vend a
 `lambda:InvokeFunctionUrl` role for server-to-server callers (none exists today;
 the browser uses Cognito). This is the single item blocking `ChokepointProvider`.
 
+### Minting the root ledger from outside the process  [#11, P9, P4]
+
+Everything above is about a call quarry makes *outward*. This is the other
+direction: a supervising host spawns `quarry run` as a subprocess and has to
+mint the root ledger from outside, because the cap, the deadline and the scope
+tags are the host's to choose and not quarry's to assume.
+
+**Precedence is explicit flag > environment > default, and THERE IS NO CONFIG
+FILE.** That is stated here rather than left to be discovered, because adding a
+file later must not change the order: a config file that outranked the
+environment would silently re-point a host that had been setting the
+environment correctly for months. If one is ever added it goes *below* the
+environment, above the default.
+
+| Knob | Flag | Environment | Default |
+|---|---|---|---|
+| Spend cap, integer micro-units | `--cap-micros` | `QUARRY_CAP_MICROS` | — |
+| Spend cap, decimal (people) | `--cap` | — | `1.00` |
+| Deadline, relative (people) | `--deadline` | — | unset |
+| Deadline, absolute | `--due` | `QUARRY_DUE` | unset |
+| Depth backstop | `--depth` | `QUARRY_DEPTH` | `3` |
+| Scope tags | `--scope` | `QUARRY_SCOPE` | none |
+
+Four rulings that a host integration depends on:
+
+- **The spend cap crosses the boundary as an integer.** `--cap-micros` takes
+  micro-units directly, because `Units` is `int64` and never float (Go rule 3)
+  and apportionment uses largest-remainder distribution so shares sum exactly
+  and replay is bit-stable (P8). A host that hands `1.00` to a shell to parse
+  reintroduces float at the one edge that must not have it — and this seam is
+  already micro-unit-native on the agate side (§1, "unit mapping"), so the two
+  spellings meet without a conversion. `--cap` keeps the decimal form for
+  humans, who are not crossing that boundary. **Setting both is a refusal, not
+  a precedence rule**: they are two spellings of one cap, so a silent winner is
+  how a run ships at a millionth of its intended cap with no error anywhere.
+- **A host's deadline is absolute.** `--due` takes RFC3339 and nothing else,
+  because the host owns the clock — it knows when the request arrived and what
+  it promised — and quarry must not resolve a relative duration against an
+  instant it is not supposed to read (Go rule 4). A due date with no
+  `--deadline` makes the run *deferrable* (§3.1). **A due date must not imply a
+  latency cap**, or a deferrable run would be recorded as due and priced as
+  on-demand. **An expired due date is accepted, not refused** — it is not
+  malformed, it is expired, which a queued request reaches by ordinary delay,
+  and §3.1 says whatever exists must be returnable now. Nothing prices off
+  deferrability yet; see design.md §3.1.
+- **In host mode the defaults are refused.** Under `--events-json`, a run with
+  no *explicitly set* cap in any denomination exits `2` and writes nothing to
+  stdout. `Caps.Validate()` already requires one real cap (P9), but a defaulted
+  `--cap` satisfies it silently — the gate passes while nobody decided
+  anything, and the interactive default would spend a dollar of someone's money
+  nobody authorised. Set-ness, not value: choosing `--cap 1.00` deliberately is
+  accepted even though it is the default. Any denomination counts — a host that
+  set only a deadline has conditioned the run on time, which §3.1 makes a
+  first-class cap rather than a lesser one. Interactive `quarry run` keeps its
+  defaults; a person at a terminal is not the failure mode this guards.
+- **`--depth` is a backstop, not the design.** It is host-settable because a
+  host must be able to bound the tree it pays for — not because raising it is
+  how you get a better answer. Recursion is meant to be bounded by verifier
+  availability (P2), and a tree that stopped because it hit the depth number is
+  **under-verified rather than complete**; `RunBounds.BoundBy` records which of
+  the two it was, and a replay inherits that rather than recomputing it (P8).
+  Zero is legitimate: solve the root and do not decompose.
+
 ---
 
 ## 2. Scope / entitlement tags  [P6]

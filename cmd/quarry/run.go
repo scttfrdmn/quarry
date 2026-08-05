@@ -26,9 +26,13 @@ import (
 func runCmd(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var (
-		capS       = fs.String("cap", "1.00", "spend cap (the contract, P4); required unless --deadline is set")
-		floorS     = fs.String("floor", "0.0002", "smallest allocation worth giving a child (§3)")
-		deadline   = fs.Duration("deadline", 0, "latency cap; a run may be bound by time instead of money (§3.1)")
+		capS      = fs.String("cap", "1.00", "spend cap (the contract, P4); required unless --deadline is set")
+		capMicros = fs.Int64("cap-micros", 0,
+			"spend cap in integer micro-units — the host path, no float at the boundary (#11 D1)")
+		floorS   = fs.String("floor", "0.0002", "smallest allocation worth giving a child (§3)")
+		deadline = fs.Duration("deadline", 0, "latency cap; a run may be bound by time instead of money (§3.1)")
+		due      = fs.String("due", "",
+			"absolute RFC3339 deadline; the host owns the clock (#11 D2). a due date with no --deadline is deferrable (§3.1)")
 		depth      = fs.Int("depth", 3, "max recursion depth — a BACKSTOP, not the design (P2)")
 		fake       = fs.Bool("fake", false, "use the built-in fake provider: no credentials, no money, synthetic answers")
 		model      = fs.String("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "explicit model version, never an alias (P8)")
@@ -56,10 +60,6 @@ func runCmd(ctx context.Context, args []string) error {
 		return usageErrf("a problem statement is required")
 	}
 
-	spend, err := capFlag(*capS)
-	if err != nil {
-		return err
-	}
 	floor, err := capFlag(*floorS)
 	if err != nil {
 		return err
@@ -67,12 +67,29 @@ func runCmd(ctx context.Context, args []string) error {
 	if !floor.Limited() {
 		floor = 0
 	}
-	scope, err := parseScope(*scopeS)
+
+	// The root ledger's inputs, resolved in one place: flag > environment > default, with
+	// set-ness carried because D3 turns on it (hostcaps.go). fs.Visit is read AFTER Parse
+	// and before anything consumes a value, since it reports what argv contained rather
+	// than what the values now are.
+	//
+	// hostMode is --events-json — a machine is reading this stream, so a forgotten cap is
+	// an error rather than an implicit dollar of someone's money.
+	cfg, err := resolveRoot(rootInputs{
+		capDecimal: *capS,
+		capMicros:  *capMicros,
+		deadline:   *deadline,
+		due:        *due,
+		depth:      *depth,
+		scope:      *scopeS,
+		set:        setFlags(fs),
+		hostMode:   *eventsJSON,
+	}, os.Getenv)
 	if err != nil {
 		return err
 	}
+	caps, scope := cfg.Caps, cfg.Scope
 
-	caps := quarry.Caps{Spend: spend, Latency: *deadline}
 	// P9 enforced at the boundary, with the reason: a run with no cap has nothing to
 	// plan against, so this is a design refusal rather than a missing flag.
 	if err := caps.Validate(); err != nil {
@@ -91,7 +108,7 @@ func runCmd(ctx context.Context, args []string) error {
 		Floor:      floor,
 		Now:        start,
 		Clock:      time.Now,
-		MaxDepth:   *depth,
+		MaxDepth:   cfg.Depth,
 		MaxRetries: *retries,
 		// The mechanical oracle costs ~0 and always runs (§5). It is also what makes P2
 		// a real terminator rather than a comment: with no verifier at all, recursion is
