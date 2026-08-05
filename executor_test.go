@@ -20,6 +20,12 @@ type fakeProvider struct {
 	calls int64
 	block chan struct{} // if non-nil, Complete waits on it (to force a deadline)
 	fail  error
+	// emptyContent answers with NO content while still reporting a model and a cost — the
+	// model was asked and had nothing to say. That is a RESULT (§8), not an unfunded node,
+	// and it is the only state that distinguishes the unfunded predicate from a naive
+	// content-emptiness check. Its absence made one such test vacuous (see
+	// TestWireUnfundedAgreesWithTheRecordOnEveryNode).
+	emptyContent bool
 }
 
 func (f *fakeProvider) Complete(ctx context.Context, prompt, model string, scope Scope) (Sample, error) {
@@ -34,8 +40,12 @@ func (f *fakeProvider) Complete(ctx context.Context, prompt, model string, scope
 			return Sample{}, ctx.Err()
 		}
 	}
+	content := "ans:" + prompt
+	if f.emptyContent {
+		content = ""
+	}
 	return Sample{
-		Content:      "ans:" + prompt,
+		Content:      content,
 		Cost:         f.cost,
 		Model:        model,
 		ModelVersion: model + "-v1",

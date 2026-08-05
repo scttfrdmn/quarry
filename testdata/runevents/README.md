@@ -97,6 +97,54 @@ multi-byte rune when it truncates.
 | `unicode-long` | 0 | complete | 0 | 0 | 421 | 4 | The same past the **truncation boundary**. Has both shapes: labels over 60 runes that must be cut, and one of 47 runes / 139 bytes that must **not** be. A byte-limiting host truncates that one and emits U+FFFD. |
 | `unknown-kind` | 0 | complete | 0 | 0 | 3000000 | 2 | **Synthetic.** A `quarry_future_kind` event between the answer and the receipt: a host must skip the whole object and still fold every known kind. Also the only round-dollar costs. |
 | `crashed` | — | — | — | — | — | — | **Synthetic.** A stream cut mid-line. No `.expected.json`, deliberately — see below. |
+| `live-nodes` | 3 | time-truncated | 1 | 1 | 54911 | 2 | **Synthetic.** The LIVE node stream (`--live-events`) interleaved ahead of the fold — the only case with `quarry_node_enter`/`quarry_node_exit`. See below. |
+
+### `live-nodes`
+
+The only fixture carrying the **live** kinds, and the only one a host can ignore
+entirely and still conform: they are additive under stream version 1, so skipping
+them is a valid reading. Read it if you want per-node progress; the `unknown-kind`
+skip path is what handles it otherwise.
+
+It is **hand-built and cannot be derived**, which breaks the captured/derived split
+every other case follows. A live stream is not a projection of a record: the record
+holds no entry events, no allocations (by the time a node finishes, what it *was
+allowed* is gone) and no wall-clock — `NodeTiming` is `json:"-"` because a record
+proves what was spent and decided, never how long it took. Folding a record to make
+this file would have pinned a stream nothing emits. Timestamps are fixed constants so
+the file is byte-reproducible in CI, which a real live capture could never be.
+
+Five properties live only here:
+
+1. **Exactly one version frame, and live events precede the fold.** With
+   `--live-events` the frame is written at run **start**, not in front of the fold, so
+   a host can refuse a stream before it parses anything. The fold then omits it
+   (`HostRunEventsNoFrame`). Two frames read as two concatenated streams.
+2. **Entries arrive OUT of index order** — `n0`, `n0.2`, `n0.0`, `n0.1`. Children are
+   entered concurrently, so arrival order is a race; the live `--fake` run produced
+   exactly this order. **Sort siblings by `index`**, never by arrival, or your tree
+   reorders itself between runs.
+3. **A gapped node and an unfunded node on the same stream**, as different nodes.
+   `n0.1` has `gap: true`, `n0.2` has `unfunded: true`, and no event has both. Only
+   TIME produces a gap; the cap pricing a node out is planned degradation inside
+   authority.
+4. **`duration_micros: -1` means unmeasured, never `0`.** Zero is a genuine
+   sub-millisecond duration — the number a dashboard would render as measured. Same
+   discipline as `at_unix_micros: 0` (an unstamped entry; a zero `time.Time` is year 1,
+   whose Unix micros subtract into two millennia of latency) and
+   `alloc_micros: -1` (Unlimited — `n0.1` is the only uncapped node in the corpus).
+5. **`verdict` is a three-state string**, `"passed" | "failed" | "not_assessed"`, and
+   `not_assessed` occurs here because it is the *common* case: P2 makes verifier
+   availability the terminator, so most nodes are never checked. A nil verdict means
+   **unchecked, not failed**. The vocabulary is deliberately identical to the OTel
+   projection's, so a consumer reading a trace and a live stream does not map between
+   them.
+
+`live-nodes.expected.json` covers only the folded half — `StreamExpectation` has no
+per-node fields, and adding them would change a schema you vendor for a projection you
+may not read. The live half is pinned by the `.ndjson` being byte-identical and by
+assertions in `runevent_corpus_test.go`; `scripts/host-contract.sh` checks the same
+properties on a real spawned run.
 
 ### `live-partition`
 
@@ -146,8 +194,43 @@ file has no exit code to fall back on.
 {"type":"quarry_outcome", ...}   last   — quarry's own; its absence means "crashed"
 ```
 
+With `--live-events` the live kinds go **between** the frame and agate's events, and
+the frame moves to run start (`live-nodes`):
+
+```
+{"type":"quarry_stream", ...}         at run START, before anything is known
+{"type":"quarry_node_enter", ...}     as each node begins — parent, index, allocation
+{"type":"quarry_node_exit", ...}      as each node finishes — cost, verdict, gap/unfunded
+  ... then the fold, with NO second frame ...
+{"type":"quarry_outcome", ...}
+```
+
 The frame is **purely additive**: the middle is byte-identical to what agate
 receives, and a test asserts that rather than trusting it.
+
+### Compatibility
+
+| kind | version field | since | a host that ignores it |
+|---|---|---|---|
+| `quarry_stream` | `version` (= `stream_version`) | 1 | cannot refuse a stream it should refuse — **read this one** |
+| `quarry_outcome` | — (framed by `version`) | 1 | cannot tell a crash from a finish, or money from time |
+| `quarry_node_enter` | `node_stream_version` | 1 | loses live progress only; **conforms** |
+| `quarry_node_exit` | `node_stream_version` | 1 | loses live progress only; **conforms** |
+
+The two live kinds carry **their own version**, separate from `stream_version`, and
+the separation is deliberate. A live dashboard and a supervisor that folds the terminal
+outcome are different consumers with different tolerances; coupling them would force a
+major bump on hosts that never read a live event. It is carried **per event** rather
+than in the frame because a host may attach mid-stream — tailing a log, attaching to a
+running job — where the frame has already gone past.
+
+Adding those two kinds was therefore a **minor** change: `stream_version` stayed at 1.
+If you already skip unknown kinds (`unknown-kind`), you already handle them.
+
+None of the live events is **citable**. An in-flight node has costs still moving and
+verdicts that do not exist yet; the `artifact` event's `url` names the record, which is
+the artifact. A host that treats a live number as a result will report something the
+record contradicts.
 
 Both new kinds are namespaced `quarry_*` because agate's models declare
 `extra="forbid"` and its schema has **no gap representation** — the one fact a
@@ -164,6 +247,9 @@ Framing rules (#9 D2):
 - **Changing or removing a field is major**, and `stream_version` goes up.
 - `type` is the discriminant. A line without a string `type` is an error, not an
   ignorable object.
+- **Exactly one `quarry_stream` per stream.** Its position depends on whether live
+  events are on — run start with `--live-events`, in front of the fold without — but
+  there is never a second one. A host seeing two is reading two concatenated streams.
 
 ## Exit codes
 

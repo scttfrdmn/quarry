@@ -1,0 +1,53 @@
+{
+  "case": "live-nodes",
+  "note": "SYNTHETIC — hand-built, and it CANNOT be derived from a record: a live stream carries entry events, allocations and wall-clock, none of which a record holds (#14). The live kinds ride StreamVersion 1 as ADDITIVE kinds, so a v1 host must skip them and still fold every kind it knows — the same tolerance unknown-kind pins, here with the kinds quarry actually emits. Carries: exactly ONE frame despite live events preceding the fold; entries OUT of index order (n0.2 before n0.0), because children are entered concurrently and arrival order is a race; a gapped node and an unfunded node on one stream, which must never be summed; alloc_micros -1 for Unlimited; duration_micros -1 for UNMEASURED, never 0; and verdict not_assessed, the third state a bool cannot hold.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "quarry_node_enter",
+    "quarry_node_enter",
+    "quarry_node_enter",
+    "quarry_node_enter",
+    "quarry_node_exit",
+    "quarry_node_exit",
+    "quarry_node_exit",
+    "quarry_node_exit",
+    "model",
+    "answer",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 3,
+  "outcome": "time-truncated",
+  "bound_by": "latency",
+  "gaps": 1,
+  "unfunded": 1,
+  "total_micros": 54911,
+  "cap_micros": 250000,
+  "receipt": {
+    "rows": [
+      {
+        "label": "n0.0 What does storage cost?",
+        "kind": "llm",
+        "cost_micros": 41000,
+        "cost": 0.041
+      },
+      {
+        "label": "n0 (reduce)",
+        "kind": "llm",
+        "cost_micros": 13911,
+        "cost": 0.013911
+      }
+    ],
+    "total_micros": 54911,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 41000,
+  "model_spend_unexplained_micros": 13911,
+  "provenance_present": false,
+  "answer_present": true,
+  "answer_runes": 50
+}

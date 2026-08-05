@@ -1392,6 +1392,57 @@ an integration surface and that is where the ones quarry must hold in lockstep w
 — even though this is the only one quarry owns outright. The vendorable fixtures are
 `testdata/runevents/`.
 
+### The host stream now streams, and the fold was not the thing to widen
+
+"**The two exported projections still do not stream**", above, is now half wrong, and the half that
+changed is the host stream. `quarry run --events-json --live-events` emits a per-node event at *entry*
+and at *completion*, as they happen, ahead of the fold. The OTel projection still does not stream, for
+the unchanged reason stated above: a live span emitter needs span contexts threaded down the
+recursion, which means the core importing an SDK.
+
+The paragraph's diagnosis was right and its implied remedy was wrong. It located the obstacle in the
+*telemetry seam* firing on completion — true — and the fix was not to widen that seam or the fold, but
+to project the `Observer` seam that was built for the TUI onto a wire. The fold stays a fold of a
+completed record. Nothing about it changed.
+
+Four decisions, because each had a wrong answer that looked reasonable:
+
+- **Whose protocol.** quarry's own. The alternative was asking agate for a `node` or `plan` event, and
+  that would push quarry's model of computation into a layer that has correctly scoped itself out of
+  it. The §9 divergence stays routed around, exactly as the framing above routes around the missing
+  gap representation — not closed in the wrong layer.
+- **Where it goes.** The **same stdout**, interleaved, as additive kinds under stream version 1 — no
+  bump, because the frame's own frozen rules say adding a kind is minor and a consumer must not key on
+  line position. A second destination was the alternative and is worse: it forces a host to correlate
+  two streams with no ordering guarantee between them, and *the ordering is the whole value* — a
+  node's live entry must be readable as preceding the fold that summarises it.
+
+  One consequence: **the version frame moves to run start.** A host must be able to refuse a stream
+  before it reads anything it would parse, and a frame written after the first live event arrived came
+  too late. So exactly one frame per stream, and the fold gained a variant that omits it. The live
+  kinds carry a **separate version**, per event rather than in the frame — different consumers with
+  different tolerances, and a host may attach mid-stream where the frame has already gone past.
+- **What a live event may claim: nothing not yet true.** Made structural rather than promised. The
+  entry event carries *only* fields known at entry — there is no verdict field to leave nil and no cost
+  field to leave zero, so a dashboard cannot render an in-flight zero as a measured one. On the exit
+  event the three-state fields survive to the wire as values no measurement produces:
+  `verdict` is a string enum whose third state is `not_assessed` (and unchecked is the *common* case
+  under P2, not the exception), `duration_micros: -1` is unmeasured — **not 0**, which is a plausible
+  sub-millisecond duration — and `alloc_micros: -1` is Unlimited. This is the fabricated
+  `stability: 0.0` defect, refused at a new site before it shipped.
+- **Only TIME produces a gap**, on this wire too. `gap` and `unfunded` are separate keys, always
+  emitted, never both true of one node. A live view that painted a priced-out node red would make P4's
+  contract look like a malfunction while it worked.
+
+**An observer must not perturb the run it observes**, which the seam's own doc already required and
+the wire makes testable: the record's bytes are identical whether or not anyone is watching, asserted
+on the emitted record. A live write failure is therefore *recorded and the run continues* — failing a
+run because a viewer's pipe closed would let an observer kill the thing it observes — and the
+truncated stream is itself the honest signal, since a host finds no terminal outcome and reports a
+crash.
+
+None of it is citable. The `artifact` event's url names the record; that is the artifact.
+
 ---
 
 ## 10. Execution and state

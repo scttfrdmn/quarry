@@ -557,13 +557,97 @@ returned an error. A host would have escalated a user's typo as a quarry fault.
 Fixed with an `errUsage` sentinel (`usageErrf`); if you implement against an older
 build, verify rather than assume.
 
+### D5 — live per-node events, on the same stdout, additive under version 1
+
+Added by [#14](https://github.com/scttfrdmn/quarry/issues/14), which the frame above was
+written to permit. `quarry run --events-json --live-events` emits two more kinds **as the
+run happens**, ahead of the fold:
+
+```
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}   at run START
+{"type":"quarry_node_enter","node_stream_version":1, ...}     as each node begins
+{"type":"quarry_node_exit","node_stream_version":1, ...}      as each node finishes
+  ... then the fold, with NO second frame ...
+{"type":"quarry_outcome", ...}                                last
+```
+
+The fold is unchanged. This is a projection of the **`Observer` seam** (§9), which fires on
+node *entry* and completion, not a widening of the record fold — a host learns nothing from
+a fold until the run ends, and that is what live events are for.
+
+**No version bump, by D2's own rule**: adding a kind is MINOR. If you already skip unknown
+kinds you already conform, and ignoring both live kinds costs you nothing but live progress.
+
+| kind | version field | since | ignoring it |
+|---|---|---|---|
+| `quarry_node_enter` | `node_stream_version` | 1 | conforms |
+| `quarry_node_exit` | `node_stream_version` | 1 | conforms |
+
+**Why one stream and not a second destination.** A second fd or file forces a host to
+correlate two streams with no ordering guarantee between them, and the ordering *is* the
+value: a node's live entry must be readable as preceding the fold that summarises it. One
+ordered stream gives that for free. `--live-events` without `--events-json` is **refused**
+(exit 2) rather than given a destination — its only other home is the human's stdout, which
+is the defect D1 exists to prevent.
+
+**Two consequences a host must implement:**
+
+- **Exactly one `quarry_stream` per stream, and with live events on it arrives at run
+  start** — a host must be able to refuse a stream before it parses anything, and a frame
+  written after the first live event came too late. The fold therefore omits it
+  (`HostRunEventsNoFrame`). Two frames mean two concatenated streams.
+- **The live kinds carry their own version**, separate from `version`, and carried **per
+  event** rather than in the frame. Separate because a live dashboard and a supervisor
+  folding the terminal outcome are different consumers with different tolerances, and
+  coupling them would force a major bump on hosts that never read a live event. Per-event
+  because a host may attach mid-stream — tailing a log, attaching to a running job — where
+  the frame has already gone past.
+
+**Absence is not zero, at three new sites**, and each value is one no measurement can
+produce:
+
+- **`duration_micros: -1`** is unmeasured. **Not `0`**, which is a genuine sub-millisecond
+  duration and exactly the figure a dashboard would render as measured.
+- **`at_unix_micros: 0`** is an unstamped entry. A zero `time.Time` is year 1, whose Unix
+  micros a host would subtract into roughly two millennia of latency.
+- **`alloc_micros: -1`** is Unlimited — `Units(Unlimited)`'s own value, as `cap_micros` is
+  on the outcome event. Render it as "no cap", never as a negative budget.
+
+**`verdict` is a three-state string**: `"passed" | "failed" | "not_assessed"`. A bool cannot
+hold the third, and the third is the **common** case — P2 makes verifier availability the
+primary terminator, so most nodes in a real run were never checked. `not_assessed` means
+UNCHECKED, never failed; a host painting it as a failure reports a verification problem
+quarry never found. The vocabulary is deliberately identical to the OTel projection's, so a
+consumer reading a trace and a live stream does not map between them.
+
+**`gap` and `unfunded` are separate keys on every exit event, always emitted, and never both
+true of one node** — D3's ruling at a live site. A view that painted a priced-out node red
+would make P4's contract look like a malfunction while it worked exactly as promised.
+
+**Nothing on this wire is citable, and the record's bytes do not depend on who is watching.**
+An in-flight node has costs still moving and verdicts that do not exist yet; the `artifact`
+event's url names the record, which is the artifact. A live *write failure* does not fail the
+run — an observer that killed the run it observes is what P8's non-perturbation rule forbids
+— and the resulting truncated stream is the honest signal: no terminal outcome, so a host
+reports a crash, per the `crashed` case.
+
+The fixture is `live-nodes`, and unlike every other case it is **hand-built and cannot be
+derived**: a record holds no entry events, no allocations (once a node finishes, what it was
+*allowed* is gone) and no wall-clock. `scripts/host-contract.sh` checks the same properties
+on a real spawned run, since fd ownership and ordering are unreachable from `go test`.
+
 ### The conformance corpus
 
-`testdata/runevents/` is the vendorable fixture set, ten cases, with its own
+`testdata/runevents/` is the vendorable fixture set, eleven cases, with its own
 [README](../testdata/runevents/README.md) naming the producing commit and the
 invocation per case. **Records are captured and never regenerated; streams and
 expectations are derived and asserted byte-identical**, so what is claimed
 deterministic is the *fold*, which is pure — not the runs.
+
+`live-nodes` is the one case that **breaks that split, deliberately**: a live stream is
+not a projection of a record, so there is nothing to derive it from (see D5). It is
+hand-built with fixed timestamps, and `StreamExpectation` covers only its folded half —
+the per-node assertions live in the test.
 
 #9 asked for a script producing the whole corpus under `--fake`, reproducible in
 CI. Two of its own required cases make that impossible, and naming which is more

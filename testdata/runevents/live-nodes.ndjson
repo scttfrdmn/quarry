@@ -1,0 +1,14 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"quarry_node_enter","node_stream_version":1,"node_id":"n0","parent_id":"","depth":0,"index":0,"statement":"What does storage cost, how does it scale, and what dominates the bill?","scope":{"lab":"example"},"alloc_micros":250000,"arm":false,"at_unix_micros":1700000000000000}
+{"type":"quarry_node_enter","node_stream_version":1,"node_id":"n0.2","parent_id":"n0","depth":1,"index":2,"statement":"What dominates the bill?","scope":{"lab":"example"},"alloc_micros":80000,"arm":false,"at_unix_micros":1700000000001000}
+{"type":"quarry_node_enter","node_stream_version":1,"node_id":"n0.0","parent_id":"n0","depth":1,"index":0,"statement":"What does storage cost?","scope":{"lab":"example"},"alloc_micros":80000,"arm":false,"at_unix_micros":1700000000001200}
+{"type":"quarry_node_enter","node_stream_version":1,"node_id":"n0.1","parent_id":"n0","depth":1,"index":1,"statement":"How does it scale?","scope":{"lab":"example"},"alloc_micros":-1,"arm":false,"at_unix_micros":1700000000001400}
+{"type":"quarry_node_exit","node_stream_version":1,"node_id":"n0.0","depth":1,"cost_micros":41000,"verdict":"passed","gap":false,"unfunded":false,"cache_hit":false,"base_case":"no_verifier","retries":0,"model_version":"us.anthropic.claude-haiku-4-5-20251001-v1:0","halo_tokens":143,"generated_tokens":381,"duration_micros":1204000}
+{"type":"quarry_node_exit","node_stream_version":1,"node_id":"n0.1","depth":1,"cost_micros":0,"verdict":"not_assessed","gap":true,"unfunded":false,"cache_hit":false,"base_case":"","retries":0,"halo_tokens":0,"generated_tokens":0,"duration_micros":-1}
+{"type":"quarry_node_exit","node_stream_version":1,"node_id":"n0.2","depth":1,"cost_micros":0,"verdict":"not_assessed","gap":false,"unfunded":true,"cache_hit":false,"base_case":"","retries":0,"halo_tokens":0,"generated_tokens":0,"duration_micros":-1}
+{"type":"quarry_node_exit","node_stream_version":1,"node_id":"n0","depth":0,"cost_micros":13911,"verdict":"not_assessed","gap":false,"unfunded":false,"cache_hit":false,"base_case":"","children":["n0.0","n0.1","n0.2"],"retries":1,"halo_tokens":512,"generated_tokens":210,"duration_micros":3411000}
+{"type":"model","tier":"haiku@4.5","label":"haiku@4.5","state":"done","cost":0.041}
+{"type":"answer","text":"Storage cost is dominated by egress at this scale."}
+{"type":"receipt","rows":[{"label":"n0.0 What does storage cost?","kind":"llm","cost":0.041},{"label":"n0 (reduce)","kind":"llm","cost":0.013911}],"total":0.054911}
+{"type":"artifact","run_id":"synthetic-live-nodes","url":"file:///testdata/synthetic.json"}
+{"type":"quarry_outcome","outcome":"time-truncated","bound_by":"latency","gaps":1,"unfunded":1,"total_micros":54911,"cap_micros":250000}
