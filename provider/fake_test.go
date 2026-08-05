@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	quarry "github.com/scttfrdmn/quarry"
 )
@@ -376,4 +377,37 @@ func splittable() quarry.Problem {
 	return quarry.Problem{Statement: "What does the deployment cost per month, " +
 		"how does that scale with the number of users, " +
 		"and what is the dominant term in the total"}
+}
+
+func TestFakeAnswerTruncatesByRuneAndNeverEmitsABrokenOne(t *testing.T) {
+	// FOUND BY RUNNING THE BINARY, not by the suite: `quarry run --fake` on a question in
+	// French and Chinese printed "究竟是什��…" — an orphaned byte pair, because the echo
+	// truncated at 80 BYTES and a CJK rune is three. Go's JSON encoder replaces the orphan
+	// with U+FFFD, so the RECORD contained corrupted text where the user's own question had
+	// a character, and the record is the deliverable (§8).
+	//
+	// Invisible to every existing test for the reason CLAUDE.md names: a fixture cleaner
+	// than the real input cannot discover what the real input does. Every fake fixture here
+	// was ASCII, where bytes and runes coincide.
+	long := strings.Repeat("存储成本如何", 30) // 180 runes, 540 bytes — well past the limit
+	got := fakeAnswer(long)
+	if !utf8.ValidString(got) {
+		t.Errorf("a truncated answer must remain valid UTF-8; a host writing this to JSON "+
+			"emits U+FFFD where the question had a character: %q", got)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Errorf("no replacement character may appear: it is indistinguishable from the "+
+			"model having said one, got %q", got)
+	}
+	// And the truncation still HAPPENED, or this test would pass on a fake that echoed
+	// everything and pin nothing.
+	if !strings.Contains(got, "…") {
+		t.Errorf("a 180-rune statement must still be truncated, got %q", got)
+	}
+	// Mixed-width input, which is the shape that actually bit: an ASCII prefix long enough
+	// to put the boundary inside a multibyte rune.
+	mixed := strings.Repeat("cost ", 15) + strings.Repeat("存储成本如何", 5)
+	if m := fakeAnswer(mixed); strings.ContainsRune(m, utf8.RuneError) {
+		t.Errorf("a boundary landing mid-rune must not corrupt the echo, got %q", m)
+	}
 }

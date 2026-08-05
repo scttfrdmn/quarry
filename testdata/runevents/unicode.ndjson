@@ -1,0 +1,6 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"model","tier":"fake@fake","label":"fake@fake","state":"done","cost":0.000247}
+{"type":"answer","text":"[fake answer] Combien coûte le stockage — this reduces to a question already asked upstream (synthetic, no model was called, h=df247d37)\n[fake answer] comment cela évolue-t-il — a bound exists where a point estimate does not (synthetic, no model was called, h=5bf8193b)\n[fake answer] et qu'est-ce qui domine la facture — 存储成本如何？ — a bound exists where a point estimate does not (synthetic, no model was called, h=418e3c4f)"}
+{"type":"receipt","rows":[{"label":"n0.0 Combien coûte le stockage","kind":"llm","cost":0.000082},{"label":"n0.1 comment cela évolue-t-il","kind":"llm","cost":0.000102},{"label":"n0.2 et qu'est-ce qui domine la facture — 存储成本如何？","kind":"llm","cost":0.000063}],"total":0.000247}
+{"type":"artifact","run_id":"afda3ecadeeee64a36fce340f9bf1b3bd9473df52f2b2d0ca0eb541e8b5e5729","url":"file:///testdata/unicode.json"}
+{"type":"quarry_outcome","outcome":"complete","bound_by":"","gaps":0,"unfunded":0,"total_micros":247,"cap_micros":250000}

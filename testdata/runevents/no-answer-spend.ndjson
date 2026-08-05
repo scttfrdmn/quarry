@@ -1,0 +1,4 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"receipt","rows":[],"total":0}
+{"type":"artifact","run_id":"7e744f311fd701a5d2ec8da89ab10d88534f4090e05d7ec04b7d97b21482d87a","url":"file:///testdata/no-answer-spend.json"}
+{"type":"quarry_outcome","outcome":"no-answer","bound_by":"","gaps":0,"unfunded":1,"total_micros":0,"cap_micros":1}

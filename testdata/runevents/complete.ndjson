@@ -1,0 +1,6 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"model","tier":"fake@fake","label":"fake@fake","state":"done","cost":0.000218}
+{"type":"answer","text":"[fake answer] What does storage cost — the mechanism is plausible and unmeasured (synthetic, no model was called, h=7de3fbfa)\n[fake answer] how does it scale — a bound exists where a point estimate does not (synthetic, no model was called, h=c694c1b7)\n[fake answer] and what dominates the bill· — the answer depends on a definition nobody fixed (synthetic, no model was called, h=dd9e9f1c)"}
+{"type":"receipt","rows":[{"label":"n0.0 What does storage cost","kind":"llm","cost":0.000076},{"label":"n0.1 how does it scale","kind":"llm","cost":0.000068},{"label":"n0.2 and what dominates the bill?","kind":"llm","cost":0.000074}],"total":0.000218}
+{"type":"artifact","run_id":"4f8ca451e412799a1cb7d5d3bdbade547ce0755f63f305a89064ab7c3f8146bf","url":"file:///testdata/complete.json"}
+{"type":"quarry_outcome","outcome":"complete","bound_by":"","gaps":0,"unfunded":0,"total_micros":218,"cap_micros":250000}

@@ -1,0 +1,4 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"receipt","rows":[],"total":0}
+{"type":"artifact","run_id":"7d56d4eb978156cd421af6ca09e086ba7f6dc93450d10e0e8607962e4ce8feff","url":"file:///testdata/no-answer-time.json"}
+{"type":"quarry_outcome","outcome":"no-answer","bound_by":"latency","gaps":4,"unfunded":0,"total_micros":0,"cap_micros":1000000}

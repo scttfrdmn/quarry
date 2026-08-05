@@ -252,8 +252,14 @@ func fakeAnswer(prompt string) string {
 	if i := strings.LastIndex(stmt, "\n"); i >= 0 && len(stmt) > 120 {
 		stmt = strings.TrimSpace(stmt[i+1:])
 	}
-	if len(stmt) > 80 {
-		stmt = stmt[:80] + "…"
+	// RUNES, NOT BYTES, and this was a real defect found by running the binary against a
+	// question in French and Chinese: stmt[:80] cut a 3-byte CJK rune in half, so the
+	// answer carried an orphaned byte pair that Go's JSON encoder turned into U+FFFD. The
+	// record then contained corrupted text where the user's own question had a character,
+	// and no test saw it because every fixture was ASCII. rowLabel (runevent.go:382)
+	// already truncated by runes for exactly this reason; the fake did not.
+	if runes := []rune(stmt); len(runes) > 80 {
+		stmt = string(runes[:80]) + "…"
 	}
 	// The echoed statement is the OTHER source of sentence boundaries, and the one that
 	// actually bit: cleanSplit re-appends "?" to each sub-question, so a leaf's statement

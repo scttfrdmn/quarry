@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -182,7 +184,7 @@ func TestUSDToUnitsRoundsAndDoesNotTruncate(t *testing.T) {
 		}
 	}
 	// Every row of the live receipt round-trips, which is what makes per-row agreement
-	// with the ledger ("to the micro-unit", integration-requirements §5) a true claim.
+	// with the ledger ("to the micro-unit", integration-requirements §3) a true claim.
 	for _, c := range liveCosts {
 		if got := USDToUnits(unitsToUSD(c)); got != c {
 			t.Errorf("live cost %d round-tripped to %d", c, got)
@@ -335,6 +337,76 @@ func TestWriteRunEventsIsNewlineDelimitedAndDeterministic(t *testing.T) {
 		if _, ok := probe["type"]; !ok {
 			t.Errorf("line %d has no discriminant type field: %s", i, ln)
 		}
+	}
+}
+
+func TestHostRunEventsFramesTheStreamWithoutChangingAgatesPart(t *testing.T) {
+	// #9's NON-GOAL, asserted rather than trusted: framing the stream for a supervising
+	// host must not change a byte of what agate receives. The two folds share one union,
+	// and the way that stays true is that HostRunEvents is RunEvents with events added at
+	// the ends — so the middle is compared byte-for-byte, not merely by type.
+	rec := recTwoLeaves()
+	var plain, framed bytes.Buffer
+	if err := WriteRunEvents(&plain, RunEvents(rec, "u", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRunEvents(&framed, HostRunEvents(rec, "u", nil)); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(framed.String(), "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("a framed stream is version + payload + outcome, got %d lines", len(lines))
+	}
+	middle := strings.Join(lines[1:len(lines)-1], "\n") + "\n"
+	if middle != plain.String() {
+		t.Errorf("the frame must be purely additive; agate's part of the stream changed.\n"+
+			"agate sees:\n%s\nframed middle:\n%s", plain.String(), middle)
+	}
+	if !strings.HasPrefix(lines[0], `{"type":"quarry_stream"`) {
+		t.Errorf("the version must be the FIRST line — a host cannot refuse a stream whose "+
+			"first line is already payload, got %s", lines[0])
+	}
+	if !strings.HasPrefix(lines[len(lines)-1], `{"type":"quarry_outcome"`) {
+		t.Errorf("the outcome must be LAST: its absence is how a crashed run is detected, "+
+			"got %s", lines[len(lines)-1])
+	}
+}
+
+func TestAnUnknownKindDoesNotBreakAConformingConsumer(t *testing.T) {
+	// The claim at the top of this file — "adding an event kind here cannot break an
+	// existing consumer" — had nothing testing it for as long as it has been written down.
+	// Read the vendored fixture the way a HOST does: untyped, keyed on `type`, and check
+	// that every known figure still folds with an unknown object interleaved.
+	//
+	// Deliberately reads the CORPUS FILE rather than building the stream here. A test that
+	// constructs its own input cannot discover that the shipped fixture lost the property
+	// (CLAUDE.md), and the fixture is the artifact the twins actually consume.
+	data, err := os.ReadFile(filepath.Join(corpusDir, "unknown-kind.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadStreamEvents(data)
+	if err != nil {
+		t.Fatalf("a stream with an unknown kind must parse cleanly: %v", err)
+	}
+	var sawUnknown bool
+	var total float64
+	for _, ev := range events {
+		switch ev["type"] {
+		case "quarry_future_kind":
+			sawUnknown = true
+		case "receipt":
+			total, _ = ev["total"].(float64)
+		}
+	}
+	if !sawUnknown {
+		t.Fatal("the fixture no longer contains an unknown kind, so this test is vacuous")
+	}
+	if total != 3 {
+		t.Errorf("the receipt AFTER the unknown kind must still fold, got total %v", total)
+	}
+	if out, ok := TerminalOutcome(events); !ok || out != OutcomeComplete {
+		t.Errorf("the terminal outcome must survive an unknown kind before it, got %q ok=%v", out, ok)
 	}
 }
 

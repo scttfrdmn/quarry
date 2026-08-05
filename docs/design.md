@@ -1349,6 +1349,49 @@ becomes nullable the data is already there.
 type can compute the flag perfectly and the misleading zero still reaches the front end if someone
 passes the object anyway. So it is asserted end-to-end on the emitted bytes, not on the struct.
 
+### A fourth consumer: a supervising host, which is not a viewer
+
+The table above enumerated *viewers* — things a person looks at. It missed a consumer that reads a
+run without anyone watching: **another program that spawns quarry as a subprocess and decides what to
+do next.** Two exist (bucktooth in Go, rustynail in Rust), and the requirement they brought is not a
+rendering requirement at all.
+
+| surface | consumer | carries | omits |
+|---|---|---|---|
+| **`quarry run --events-json`** | **a supervising host, choosing the next move with no human reading** | **the `RunEvent` stream plus a version and a terminal outcome; gaps and unfunded, separately; spend and cap as integers** | **the shape** |
+
+It is the `RunEvent` stream **framed**, not a fourth protocol: a version line in front so a host can
+*refuse* a stream, and an outcome line behind so it can *trust* one it read to EOF. Everything between
+is byte-identical to what agate receives, asserted rather than assumed — three protocols kept in
+lockstep by hand is the failure mode this avoids.
+
+Three things this consumer needs that a viewer does not, and each is why a field exists:
+
+- **A terminal marker.** NDJSON yields whole lines whether or not the producer finished, so a run
+  killed after the artifact event is indistinguishable from one that completed. Only the *absence* of
+  a terminal event says "crashed" in band — and a host reading a vendored fixture from a file has no
+  exit code to fall back on.
+- **A status vocabulary, not a boolean.** "Finished", "ran out of time", "ran out of money" and
+  "crashed" call for four different next moves, and a host choosing automatically will offer a
+  deadline raise where money was needed unless the status tells them apart. That is the §3.1
+  mislabelling `ErrRecordedUnfunded` prevents, one layer out — which is also why **cap-bound
+  degradation exits 0**: it is planned degradation inside authority, and a non-zero status would make
+  P4's contract look like a malfunction every time it worked.
+- **Money as integers.** Everything in agate's union prices in USD floats because agate does, and a
+  real 25-node receipt's rows do not sum to its total in float64. The terminal event is quarry's own,
+  so it carries the ledger's `int64` micro-units and there is nothing to reconcile.
+
+**This does not resolve the standing §9 divergence, and it is worth being clear why.** agate still has
+no gap representation, so the one fact a supervising host most needs — did this answer cover the
+question, or part of it — cannot ride on any event agate accepts. quarry does not widen agate's
+contract to fix that; it frames its own events around agate's, namespaced `quarry_*`, and agate's
+`build_artifact` skips both frames. The divergence is *routed around*, not closed.
+
+The contract is written down in `docs/integration-requirements.md` §6 rather than here, because it is
+an integration surface and that is where the ones quarry must hold in lockstep with another repo live
+— even though this is the only one quarry owns outright. The vendorable fixtures are
+`testdata/runevents/`.
+
 ---
 
 ## 10. Execution and state

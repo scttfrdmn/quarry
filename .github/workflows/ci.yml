@@ -109,6 +109,68 @@ jobs:
           fi
           ./bin/quarry replay "$rec"
 
+      # The host contract (#9). Two of its four decisions are about WHICH FILE
+      # DESCRIPTOR bytes land on and WHAT THE PROCESS RETURNS, and no Go test can
+      # reach either: `go test` calls exitCode() as a function and writes to a
+      # buffer, so a summary printed to stdout under --events-json — which is a
+      # parse error in a host's NDJSON — is invisible to the whole suite.
+      #
+      # bucktooth and rustynail vendor testdata/runevents and branch on these
+      # numbers, so a regression here is a silent misread in two other repos rather
+      # than a build error anywhere.
+      - name: the host event stream is a contract (#9 D1/D2/D4)
+        run: ./scripts/host-contract.sh ./bin/quarry
+
+      # THE FOLD IS ALREADY PINNED by `go test` above: TestHostCorpus compares the
+      # derived .ndjson and .expected.json byte-for-byte and fails without -update.
+      # So this step deliberately does NOT re-assert that. It asserts the two things
+      # a Go test cannot see, both of which are about the corpus being VENDORABLE:
+      #
+      #   1. every file is COMMITTED. An uncommitted fixture is not vendorable at all,
+      #      and this is the likely mistake: `git add testdata/` is easy to forget on a
+      #      directory the suite regenerates for you.
+      #   2. `-update` never touches a RECORD. Records are captured by hand and are the
+      #      one thing regeneration must not launder — two of the cases cannot be
+      #      reproduced by any command (see testdata/runevents/README.md).
+      #
+      # THE FIRST DRAFT OF THIS STEP WAS VACUOUS and it took reintroducing a defect to
+      # find out: it ran `-update` then `git diff`, but testdata/ was untracked, so
+      # `git diff` reported nothing and the step passed with the fold changed under it.
+      # A gate that under-reports is worse than no gate.
+      - name: the vendored corpus is committed and its records are untouched
+        run: |
+          set -euo pipefail
+
+          untracked=$(git ls-files --others --exclude-standard -- testdata/runevents)
+          if [ -n "$untracked" ]; then
+            echo "these corpus files are not committed, so nobody can vendor them:"
+            echo "$untracked"
+            exit 1
+          fi
+          n=$(git ls-files -- 'testdata/runevents/*.expected.json' | wc -l)
+          if [ "$n" -lt 6 ]; then
+            echo "found $n committed expectations; #9 requires the corpus, so this step"
+            echo "must not pass on an empty or half-deleted directory"
+            exit 1
+          fi
+          echo "$n cases committed"
+
+          # Regeneration must be a no-op on a clean tree, and must not touch a record.
+          go test . -run TestHostCorpus -update -count=1
+          if ! git diff --exit-code --name-only -- testdata/runevents; then
+            echo "regenerating changed committed files: either the wire changed — bump"
+            echo "StreamVersion and tell bucktooth and rustynail — or this is an accident."
+            exit 1
+          fi
+          records=$(git ls-files -- 'testdata/runevents/*.json' \
+            | grep -v '\.expected\.json$')
+          if ! git diff --exit-code --name-only -- $records; then
+            echo "a RECORD changed. -update derives streams FROM records and must never"
+            echo "write one: live-partition cost real money and the truncated cases are"
+            echo "wall-clock races that would silently capture a different shape."
+            exit 1
+          fi
+
       - name: the demo runs end to end
         run: QUARRY_DEMO_NOPAUSE=1 ./demo.sh
 

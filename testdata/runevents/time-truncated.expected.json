@@ -1,0 +1,45 @@
+{
+  "case": "time-truncated",
+  "note": "A deadline cut this run short: it has GAPS and a partial answer. Exit 3, distinct from complete — a host must be able to tell a partial answer from a whole one without parsing prose. Gaps are TIME only; compare no-answer-spend.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "model",
+    "answer",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 3,
+  "outcome": "time-truncated",
+  "bound_by": "latency",
+  "gaps": 2,
+  "unfunded": 0,
+  "total_micros": 172,
+  "cap_micros": 1000000,
+  "receipt": {
+    "rows": [
+      {
+        "label": "n0.0 What does storage cost",
+        "kind": "llm",
+        "cost_micros": 76,
+        "cost": 0.000076
+      },
+      {
+        "label": "n0.2 and what dominates the bill?",
+        "kind": "llm",
+        "cost_micros": 96,
+        "cost": 0.000096
+      }
+    ],
+    "total_micros": 172,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 172,
+  "model_spend_unexplained_micros": 0,
+  "provenance_present": false,
+  "answer_present": true,
+  "answer_runes": 259
+}

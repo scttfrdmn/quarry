@@ -416,6 +416,186 @@ by hand.
 
 ---
 
+## 6. The host event stream: `quarry run --events-json`  [§9, P8 — quarry's own protocol]
+
+**This section is not about agate.** Everything above records a contract someone
+else owns, discovered by reading their code. This one quarry owns outright: it is
+the stream a **supervising host** reads when it spawns quarry as a subprocess.
+Frozen by [#9](https://github.com/scttfrdmn/quarry/issues/9); consumed by
+**bucktooth** (Go) and **rustynail** (Rust), which is why it is written down as a
+contract rather than left as a flag's behaviour.
+
+It sits here rather than in §4 because it is the *fourth* projection of a record,
+and the second one quarry controls. §4's table needs no revision — a host stream is
+not a viewer — but the reason this exists at all is §4's finding restated one layer
+out: **agate's protocol has no gap representation**, so the one fact a supervising
+host most needs (did this answer cover the question, or part of it?) cannot ride on
+any event agate accepts.
+
+### D1 — the events own stdout; humans move to stderr
+
+`--events-json` makes NDJSON **the only thing on stdout**. The live tree and the
+run summary go to stderr, unchanged in content.
+
+fd 3 was considered and rejected: it is harder to consume from every host language
+(Rust's `std::process` has no third-pipe affordance at all) for no gain over the
+standard Unix contract. The redirect in `cmd/quarry/run.go` is a `human io.Writer`
+variable rather than a branch at each print site, because a missed site is not a
+visible defect — it is a stray line inside a host's NDJSON, reported as a parse
+error against quarry.
+
+**Ordering is part of the contract.** The events are written *after* the record
+file, because `ArtifactEvent.url` names that file and a host that read the stream
+and went looking would otherwise race a file that did not exist yet. They fold
+from the **record**, never from the executor's result, so the stream cannot
+disagree with the artifact it points at (§8).
+
+### D2 — a versioned, frozen frame
+
+```
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}   first
+  ... agate's events, byte-identical to what agate receives ...
+{"type":"quarry_outcome", ...}                                last
+```
+
+| rule | why |
+|---|---|
+| every line `\n`-terminated, **including the last** | a host reading line-wise otherwise cannot tell a complete final event from a truncated one — the crashed-vs-finished distinction |
+| **adding a kind is a MINOR bump** | agate's reducer and `build_artifact` both dispatch on `type` and skip the unknown (verified against the real Python), so a conforming consumer cannot break |
+| **changing or removing a field is MAJOR**, and `version` goes up | that is the change a consumer cannot absorb |
+| `type` is the discriminant; a line with no string `type` is an **error**, not an ignorable object | |
+| **do not key on line position** | a future kind may follow the outcome, which is why `TerminalOutcome` scans backwards |
+
+`HostRunEvents` is a **separate fold** from `RunEvents`, not a flag on it: #9's
+non-goals forbid changing what agate receives, and the middle of the frame is
+asserted byte-identical rather than assumed. Both new kinds are namespaced
+`quarry_*` — partly because agate's models declare `extra="forbid"`, and partly
+because a bare `version` is exactly the name a second producer would also pick
+with a different meaning.
+
+**The two frames are not symmetric in what they prove.** The version lets a host
+**refuse** a stream; the outcome lets it **trust** one it read to EOF. NDJSON
+yields whole lines whether or not the producer finished, so the outcome event's
+**absence** is the only in-band signal that a run was killed — and a host reading a
+*vendored fixture from a file* has no exit code to fall back on.
+
+### D3 — provenance extends `ArtifactEvent`; absence is not zero
+
+No parallel provenance event (agate#265 C3, §3 above). And because agate's
+`stability` is non-nullable, **quarry says "not measured" by omitting the whole
+provenance object.**
+
+> **A host must treat absent provenance as UNMEASURED, never as zero.** A rendered
+> 0% badges "nothing replicated" on a run where nobody could tell. `cmd/quarry`
+> passes provenance only when `StabilityKnown`, and every corpus case today has it
+> absent — nothing in the CLI wires replication, and one run is one sample (P7).
+
+Two more sites where absence is not zero, both on the outcome event:
+
+- **`cap_micros: -1`** means no spend cap. Not `0` — `0` reads as *a cap of
+  nothing*, which would make an unlimited run look infinitely overspent. `-1` is
+  `Units(Unlimited)`'s own value, not a sentinel swap at the wire.
+- **`bound_by: ""`** means no denomination bit. It is a measurement, so it is
+  **emitted, not omitted**: a host that saw no key could not tell "nothing bound
+  this run" from "this producer does not report it".
+
+`total_micros` and `cap_micros` are the only figures on the stream that are **not
+floats** — this event is quarry's own, so it carries the ledger's `int64`
+micro-units and a host has nothing to reconcile. Everything in agate's union prices
+in USD because agate does; reconcile those per §3, in micro-units, `round` never
+truncate, and never with a float epsilon.
+
+**Gaps and unfunded are different denominations and must never be summed.** Only
+TIME produces a gap; spend exhaustion produces *unfunded* nodes, which is planned
+degradation inside authority. A host that added them would offer more time where
+money was needed — the §3.1 mislabelling `ErrRecordedUnfunded` exists to prevent,
+one layer out.
+
+### D4 — the exit codes are a vocabulary, not a boolean
+
+```
+0  complete             finished inside its caps, with an answer
+                        — AND cap-bound degradation, by ruling
+1  fault                crash, provider error, unreadable record — a MALFUNCTION
+2  usage error          bad flags, refused caps; nothing ran
+3  time-truncated       a deadline cut it short; the record has gaps (§3.1)
+4  no answer            nothing was affordable, or every node came back empty
+```
+
+**The numbers are part of the contract and may not be reshuffled.** Two hosts in
+two languages branch on them, so a renumbering is a silent misread rather than a
+build error. `cmd/quarry/main.go` holds the constants; `cmd/quarry/main_test.go`
+pins them, and pins the mapping against every corpus case's hand-written
+`exit_code`.
+
+- **1 and 2 keep their conventional meanings**, because they were already
+  load-bearing: shells, CI and `go test`-style tooling all read 1 as failure and 2
+  as misuse. Only the new codes are new.
+- **The line between 1 and 2 is whether anything was *attempted*.**
+  `quarry show nonexistent.json` is **1**, not 2 — the invocation was well-formed
+  and the read failed.
+- **`no-answer` is 4, not 1**, even though the cause is usually spend: the record
+  is faithful and citable — it accurately records that nothing was affordable — so
+  it is an outcome, not a fault.
+- **The default is `fault`.** An error the mapping does not recognise is a
+  malfunction until something says otherwise; a softer default would let a new
+  failure path reach a host as an ordinary outcome, and a host that believes a
+  fault was an outcome will build on a broken answer. The same holds for an
+  unmapped `Outcome` value: `statusErr` has no fall-through to nil.
+
+**Cap-bound degradation is deliberately not in this table**, and that is the ruling
+rather than an omission. A degraded run that produced an answer exits **0** — the
+cap did exactly what P4 promises, and a non-zero status would make the contract
+look like a malfunction every time it worked. A host that wants to know reads
+`bound_by`, `unfunded` and `total_micros` off the outcome event, which is why that
+event carries them.
+
+One of these was **found by running the binary**, not by the table: `quarry run
+--cap 0` — a plain flag mistake, nothing run — exited **1**, so the documented "2
+usage error" was true of `main`'s arg parsing and false of every refusal that
+returned an error. A host would have escalated a user's typo as a quarry fault.
+Fixed with an `errUsage` sentinel (`usageErrf`); if you implement against an older
+build, verify rather than assume.
+
+### The conformance corpus
+
+`testdata/runevents/` is the vendorable fixture set, ten cases, with its own
+[README](../testdata/runevents/README.md) naming the producing commit and the
+invocation per case. **Records are captured and never regenerated; streams and
+expectations are derived and asserted byte-identical**, so what is claimed
+deterministic is the *fold*, which is pure — not the runs.
+
+#9 asked for a script producing the whole corpus under `--fake`, reproducible in
+CI. Two of its own required cases make that impossible, and naming which is more
+useful than a script that quietly covers less:
+
+- **Budget degradation is structurally unreachable under `--fake`.** Its per-call
+  cost is uniform, so affordability either funds every child or declines the split;
+  a tree with *some* children priced out does not exist in that mode. Hence
+  `live-partition`, a real Bedrock run — which is also the only case carrying the
+  float-sum and model-residual properties below.
+- **The time-truncated cases are wall-clock races**, and the same machine changed
+  its answer *during* this work: the pair was captured at 620ms/500ms, and once
+  `BudgetedSolver` began wrapping the leaf prompt — which changes the prompt hash,
+  and the fake's per-call latency derives from it — the whole usable band moved to
+  ~185–195ms. In CI the same command would silently produce a *different* corpus,
+  which #9 is explicit is worse than none.
+
+Two host-side properties are pinned only by that live case and are worth naming
+here because a host will hit them:
+
+- **The receipt rows do not sum to the total in float64** (§3), and that is
+  arithmetic, not an emitter bug.
+- **`model_spend_micros` does not tie to `total_micros`** — 38395 against 80437 on
+  `live-partition`, leaving 42042 unexplained, over half the run. `executor.go`'s
+  reduce path assigns `Cost` but no `Model`/`ModelVersion`, so a reduce node is
+  itemised in the receipt and appears in no `ModelEvent`; 7 of 25 spending nodes
+  carry no version. A host rendering "spend by model" beside a total will show two
+  numbers that disagree. **Do not close the gap by inventing an untagged row.**
+  Tracked as [#20](https://github.com/scttfrdmn/quarry/issues/20).
+
+---
+
 ## Status of the work
 
 Built (quarry-side):

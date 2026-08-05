@@ -1,0 +1,7 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"model","tier":"m@1","label":"m@1","state":"done","cost":3}
+{"type":"answer","text":"an answer, folded past a kind the reader does not know"}
+{"type":"quarry_future_kind","detail":"a field no current kind has"}
+{"type":"receipt","rows":[{"label":"n0.0 a round dollar","kind":"llm","cost":1},{"label":"n0.1 two round dollars","kind":"llm","cost":2}],"total":3}
+{"type":"artifact","run_id":"synthetic-unknown-kind","url":"file:///testdata/synthetic.json"}
+{"type":"quarry_outcome","outcome":"complete","bound_by":"","gaps":0,"unfunded":0,"total_micros":3000000,"cap_micros":5000000}
