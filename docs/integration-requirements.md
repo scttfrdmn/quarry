@@ -217,6 +217,15 @@ re-derives tags. quarry holds `SessionTags` locally only, for its own
 cache-key/telemetry use, and does NOT reproduce IAM/AssumeRole narrowing. Its
 local `NarrowsTo` is a fast-fail courtesy; the security boundary stays with agate.
 
+**Where the tags come from when there is no agate**  [#11 D4]: a supervising host
+sets them with `--scope k=v,k=v` or `QUARRY_SCOPE` (the precedence table is in
+§1, with the rest of the root-ledger contract — this half belongs to the same
+decision). Nothing about the treatment changes: quarry hashes them into every
+cache key and propagates them, and **never interprets one**. `--scope ""` clears
+rather than falling through to the environment variable, because falling through
+would attach tags the host explicitly declined, and a tag it did not choose is
+authority it did not grant (P6). Scope never widens on descent, whoever set it.
+
 ---
 
 ## 3. Receipt  [§8, P8]
