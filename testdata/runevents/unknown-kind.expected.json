@@ -1,0 +1,46 @@
+{
+  "case": "unknown-kind",
+  "note": "SYNTHETIC — hand-built, not folded from a record. An event kind quarry does not emit, sitting BETWEEN the answer and the receipt: a host must skip the whole object and still fold every known kind (D2's minor-bump rule, which runevent.go asserted in a comment for a year with nothing testing it). Also the only case whose costs are ROUND DOLLARS, so they serialize as `1` and `2` with no decimal point — a host demanding one rejects a valid receipt, and no real quarry run is expensive enough to catch that.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "model",
+    "answer",
+    "quarry_future_kind",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 0,
+  "outcome": "complete",
+  "bound_by": "",
+  "gaps": 0,
+  "unfunded": 0,
+  "total_micros": 3000000,
+  "cap_micros": 5000000,
+  "receipt": {
+    "rows": [
+      {
+        "label": "n0.0 a round dollar",
+        "kind": "llm",
+        "cost_micros": 1000000,
+        "cost": 1
+      },
+      {
+        "label": "n0.1 two round dollars",
+        "kind": "llm",
+        "cost_micros": 2000000,
+        "cost": 2
+      }
+    ],
+    "total_micros": 3000000,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 3000000,
+  "model_spend_unexplained_micros": 0,
+  "provenance_present": false,
+  "answer_present": true,
+  "answer_runes": 54
+}

@@ -1,0 +1,57 @@
+{
+  "case": "unicode-long",
+  "note": "The unicode case past the TRUNCATION boundary, which the short one cannot reach. Receipt labels are cut at 60 RUNES (rowLabel), and this record has both shapes that distinguish an implementation: labels over the limit that must be cut, and one label of 47 runes / 139 bytes that must NOT be — a host limiting bytes would truncate it, and truncating a 3-byte rune at byte 60 emits U+FFFD where the question had a character. Every label must remain valid UTF-8 and end in the ellipsis or not at all. Its own producing run also found a real defect: fakeAnswer truncated the echoed statement by byte (provider/fake.go).",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "model",
+    "answer",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 0,
+  "outcome": "complete",
+  "bound_by": "",
+  "gaps": 0,
+  "unfunded": 0,
+  "total_micros": 421,
+  "cap_micros": 250000,
+  "receipt": {
+    "rows": [
+      {
+        "label": "n0.0.0 Quel est le coût total de possession du stockage à l'échelle…",
+        "kind": "llm",
+        "cost_micros": 99,
+        "cost": 0.000099
+      },
+      {
+        "label": "n0.0.1 comment cela évolue-t-il avec le taux d'utilisation observé …",
+        "kind": "llm",
+        "cost_micros": 128,
+        "cost": 0.000128
+      },
+      {
+        "label": "n0.0.2 et qu'est-ce qui domine réellement la facture finale?",
+        "kind": "llm",
+        "cost_micros": 120,
+        "cost": 0.00012
+      },
+      {
+        "label": "n0.1 存储的总拥有成本是多少，它如何随着一整年观察到的利用率而变化，究竟是什么在真正主导最终账单？?",
+        "kind": "llm",
+        "cost_micros": 74,
+        "cost": 0.000074
+      }
+    ],
+    "total_micros": 421,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 421,
+  "model_spend_unexplained_micros": 0,
+  "provenance_present": false,
+  "answer_present": true,
+  "answer_runes": 676
+}

@@ -1,0 +1,30 @@
+{
+  "case": "no-answer-spend",
+  "note": "The spend counterpart: a cap below the floor priced out the root itself. ZERO GAPS, one unfunded node — the distinction the record refuses to blur, since only TIME produces a gap. A host that summed gaps and unfunded would report this as time pressure and offer more of the wrong denomination.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 4,
+  "outcome": "no-answer",
+  "bound_by": "",
+  "gaps": 0,
+  "unfunded": 1,
+  "total_micros": 0,
+  "cap_micros": 1,
+  "receipt": {
+    "rows": [],
+    "total_micros": 0,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 0,
+  "model_spend_unexplained_micros": 0,
+  "provenance_present": false,
+  "answer_present": false,
+  "answer_runes": 0
+}

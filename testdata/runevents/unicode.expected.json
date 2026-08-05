@@ -1,0 +1,51 @@
+{
+  "case": "unicode",
+  "note": "Accents, an em-dash, CJK and a fullwidth question mark in the statement and the answer. answer_runes counts RUNES, so a host measuring bytes disagrees here and nowhere else. Also pins that HTML escaping is off.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "model",
+    "answer",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 0,
+  "outcome": "complete",
+  "bound_by": "",
+  "gaps": 0,
+  "unfunded": 0,
+  "total_micros": 247,
+  "cap_micros": 250000,
+  "receipt": {
+    "rows": [
+      {
+        "label": "n0.0 Combien coûte le stockage",
+        "kind": "llm",
+        "cost_micros": 82,
+        "cost": 0.000082
+      },
+      {
+        "label": "n0.1 comment cela évolue-t-il",
+        "kind": "llm",
+        "cost_micros": 102,
+        "cost": 0.000102
+      },
+      {
+        "label": "n0.2 et qu'est-ce qui domine la facture — 存储成本如何？",
+        "kind": "llm",
+        "cost_micros": 63,
+        "cost": 0.000063
+      }
+    ],
+    "total_micros": 247,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 247,
+  "model_spend_unexplained_micros": 0,
+  "provenance_present": false,
+  "answer_present": true,
+  "answer_runes": 422
+}

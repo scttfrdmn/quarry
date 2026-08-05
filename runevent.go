@@ -50,6 +50,23 @@ type RunEvent interface {
 // otherwise flood the stream, and agate's fold dedupes by label anyway
 // (artifact.py build_artifact collects distinct labels into RunArtifact.models).
 //
+// Σ ModelEvent.Cost IS LESS THAN ReceiptEvent.Total ON A REAL RUN, and a host must not
+// treat the difference as a defect. This comment used to claim the opposite — "internal
+// reduce nodes and cache hits carry no model, so they contribute nothing here —
+// correctly: nothing they did was a fresh model call attributable to a version" — and
+// the second half of that was wrong. A cache hit is cost 0 and drops out of both sides,
+// but a REDUCE node under BedrockReducer is a real model call with an explicit pinned
+// version, and executor.go's reduce path assigns Cost while never assigning Model or
+// ModelVersion. So it lands in the receipt and in TotalCost and in no ModelEvent.
+//
+// Measured on quarry-run-72c970d2ef42.json (the 25-row live record): 7 of its 25 spending
+// nodes carry no version, and the model events account for 38395 of 80437 micro-units —
+// a 42042 residual, over half the run. Not a rounding artefact. Left as
+// a residual rather than fixed here, because the fix is in the executor and changes what
+// a NodeOutcome hashes to — see issue #20; the superseded claim stays visible above per
+// the standing convention. The wrong statement was in the doc for a year and only a host
+// author reading it from outside found it.
+//
 // Tier duplicates Label deliberately. agate's `tier` is its own roster vocabulary
 // ("frontier", "open-weight-70b"); quarry has no tiers — it pins explicit versioned
 // model IDs (P8). Inventing a tier would be a false claim about agate's roster, so
@@ -114,6 +131,89 @@ type ArtifactEvent struct {
 }
 
 func (ArtifactEvent) eventType() string { return "artifact" }
+
+// StreamVersion is the framed-stream contract version a host branches on (#9 D2).
+//
+// A host that spawns quarry as a subprocess must be able to REFUSE a stream it does
+// not understand, and it cannot do that by inspecting events it has never seen. So
+// the version is stated first, before anything a consumer would try to fold.
+//
+// The compatibility rule, which is the actual deliverable here:
+//
+//   - ADDING an event kind is a MINOR change and does not bump this. agate's SPA
+//     reducer tolerates unknown types and its build_artifact dispatches on `type`
+//     and skips what it does not know (verified against the real Python), so a new
+//     kind cannot break a conforming consumer.
+//   - CHANGING or REMOVING a field, or changing what an existing kind means, is a
+//     MAJOR change and bumps this. Those are the changes a consumer cannot absorb.
+//
+// The version rides its OWN EVENT rather than a field on ArtifactEvent, and that is
+// forced rather than chosen: agate's RunProvenance twin declares extra="forbid", so
+// an added field is a hard validation error on the Python side, while an unknown
+// event type is skipped. Verified both directions against agate's real build_artifact
+// before committing to this shape.
+const StreamVersion = 1
+
+// StreamEvent opens a framed stream, declaring the contract version (#9 D2).
+//
+// Its type is namespaced (`quarry_stream`, not `version`) because this event is
+// quarry's own, not part of agate's union: agate ignores it, and a name like
+// "version" is exactly the kind a second producer might also pick with a different
+// meaning.
+type StreamEvent struct {
+	Type    string `json:"type"`
+	Version int    `json:"version"`
+	// Producer names what wrote the stream. A host reading a vendored fixture months
+	// later needs to know which implementation produced it — there is a parallel Python
+	// quarry, and the two agree on behaviour but are not the same code.
+	Producer string `json:"producer"`
+}
+
+func (StreamEvent) eventType() string { return "quarry_stream" }
+
+// OutcomeEvent closes a framed stream, stating how the run ended (#9 D4).
+//
+// THE TERMINAL EVENT, and its presence is as load-bearing as its content. A host that
+// reads a stream to EOF cannot otherwise tell a finished run from a killed one: NDJSON
+// gives it complete lines either way, so a run cut off after the artifact event looks
+// exactly like a run that finished. #9's corpus requires a crashed run to be
+// distinguishable from a time-truncated one, and only a terminal marker does that. The
+// exit code says the same thing, but a host reading a captured stream from a file — which
+// is what vendoring a fixture means — has no exit code at all.
+//
+// WHY IT IS NOT IN agate's UNION. agate has no gap representation (docs/integration-
+// requirements.md §4, a standing §9 divergence), so the ONE fact a supervising host most
+// needs — did this answer cover the question, or part of it — cannot ride on any event
+// agate accepts. Rather than widen agate's contract, this is quarry's own event on
+// quarry's own frame, skipped by agate's build_artifact along with the frame itself.
+//
+// The three counts are here because they are the distinction the classification collapses.
+// Outcome names the headline; Gaps and Unfunded name WHICH denomination produced the
+// shortfall, and under the standing ruling those are not interchangeable — a host offered
+// a deadline raise when it needed money is the §3.1 mislabelling ErrRecordedUnfunded
+// exists to prevent.
+type OutcomeEvent struct {
+	Type    string  `json:"type"`
+	Outcome Outcome `json:"outcome"`
+	// BoundBy is the denomination that actually bit, or "" for neither (§8.2). Empty is
+	// meaningful — an unbound run — not missing, so it is NOT omitempty: a host that saw
+	// no key could not tell "no cap bound this" from "this producer does not report it".
+	BoundBy Denomination `json:"bound_by"`
+	// Gaps counts nodes TIME cut short; Unfunded counts nodes the cap priced out. Both
+	// always present for the same reason BoundBy is: zero is a measurement here.
+	Gaps     int `json:"gaps"`
+	Unfunded int `json:"unfunded"`
+	// TotalMicros is the run's spend in MICRO-UNITS, integral — the one figure on this
+	// stream that is not a float. Everything agate's union carries prices in USD because
+	// agate does; this event is quarry's own, so it carries the ledger's own integers and
+	// a host has nothing to reconcile (#18, integration-requirements §3 and §6).
+	TotalMicros int64 `json:"total_micros"`
+	// CapMicros is the spend cap, or -1 for Unlimited — the contract the total sits under
+	// (P4). Unlimited is already -1 in Units, so this is the value not a sentinel swap.
+	CapMicros int64 `json:"cap_micros"`
+}
+
+func (OutcomeEvent) eventType() string { return "quarry_outcome" }
 
 // labelStatementLimit truncates a problem statement in a receipt label. Fixed so
 // the projection stays a deterministic function of the record (P8).
@@ -210,12 +310,55 @@ func RunEvents(r RunRecord, recordURL string, prov *Provenance) []RunEvent {
 	return events
 }
 
+// HostRunEvents is RunEvents FRAMED — a version line in front, an outcome line behind —
+// the stream a supervising host consumes (#9).
+//
+// A SEPARATE FOLD, not a flag on RunEvents, because #9's non-goals forbid changing
+// what agate receives. agate reaches quarry through its own transport and has never
+// needed a version (its SPA predates this integration); a host spawning quarry as a
+// subprocess does need one, and cannot get it from a stream whose first line is
+// already payload. The two consumers differ in exactly two events, so they differ in
+// exactly one function.
+//
+// Everything BETWEEN the frames is byte-identical to RunEvents, which is the property
+// that keeps ONE union rather than three: forking the events per host would give
+// quarry three protocols to hold in lockstep by hand. The frame is additive at both
+// ends and agate's build_artifact skips both — verified against the real Python, which
+// dispatches on `type` and ignores what it does not know.
+//
+// The two frames are not symmetric in what they prove. The version lets a host REFUSE a
+// stream; the outcome lets it TRUST one it read to EOF. Only the second distinguishes a
+// finished run from a killed one, since NDJSON yields whole lines either way.
+func HostRunEvents(r RunRecord, recordURL string, prov *Provenance) []RunEvent {
+	events := []RunEvent{StreamEvent{
+		Type: "quarry_stream", Version: StreamVersion, Producer: "quarry-go",
+	}}
+	events = append(events, RunEvents(r, recordURL, prov)...)
+	return append(events, OutcomeEvent{
+		Type:     "quarry_outcome",
+		Outcome:  r.Classify(),
+		BoundBy:  r.BoundBy,
+		Gaps:     len(r.Gaps()),
+		Unfunded: len(r.Unfunded()),
+		// int64(Units) directly, NOT unitsToUSD: this event is quarry's own and carries
+		// the ledger's integers, so there is no float to reconcile. Unlimited passes
+		// through as its own -1 (see the field docs).
+		TotalMicros: int64(r.TotalCost()),
+		CapMicros:   int64(r.Caps.Spend),
+	})
+}
+
 // WriteRunEvents writes events as newline-delimited JSON — the format agate's SPA
 // transport decodes (parseEventBlob splits on newlines and parses each line).
 //
 // HTML escaping is off so answer content round-trips unaltered, matching the
 // record's canonical encoding. Byte-for-byte deterministic for a given record,
 // which is what lets a replay's event stream be compared as an artifact (P8).
+//
+// Every line is \n-terminated INCLUDING THE LAST — json.Encoder.Encode appends one.
+// A host reading line-by-line otherwise cannot tell a complete final event from a
+// truncated one, which is precisely the crashed-vs-finished distinction #9's exit
+// codes exist to make.
 func WriteRunEvents(w io.Writer, events []RunEvent) error {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)

@@ -37,7 +37,7 @@ func showCmd(args []string) error {
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()
-		return fmt.Errorf("exactly one record file is required")
+		return usageErrf("exactly one record file is required")
 	}
 	rec, err := readRecord(fs.Arg(0))
 	if err != nil {
@@ -411,7 +411,7 @@ func replayCmd(ctx context.Context, args []string) error {
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()
-		return fmt.Errorf("exactly one record file is required")
+		return usageErrf("exactly one record file is required")
 	}
 	orig, err := readRecord(fs.Arg(0))
 	if err != nil {

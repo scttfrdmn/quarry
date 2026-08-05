@@ -1,0 +1,183 @@
+{
+  "case": "live-partition",
+  "note": "A REAL Bedrock run, 30 nodes / 25 receipt rows, and the most load-bearing fixture here. Three things only it has: rows that do NOT sum to the total in float64 (so a host summing floats fails on it — see #18); a model-spend residual, because reduce nodes spend with no model version; and 5 unfunded nodes, the cap-bound degradation that --fake cannot construct because its per-call cost is uniform. Exit 0: degradation is not a failure.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "model",
+    "answer",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 0,
+  "outcome": "cap-bound-degradation",
+  "bound_by": "",
+  "gaps": 0,
+  "unfunded": 5,
+  "total_micros": 80437,
+  "cap_micros": 250000,
+  "receipt": {
+    "rows": [
+      {
+        "label": "n0 What does it cost to run a 200-node GPU cluster for a year, …",
+        "kind": "llm",
+        "cost_micros": 13911,
+        "cost": 0.013911
+      },
+      {
+        "label": "n0.0 What is the annual cost to purchase, deploy, and maintain 20…",
+        "kind": "llm",
+        "cost_micros": 3509,
+        "cost": 0.003509
+      },
+      {
+        "label": "n0.0.0 What is the total hardware purchase cost for 200 GPU nodes (…",
+        "kind": "llm",
+        "cost_micros": 1889,
+        "cost": 0.001889
+      },
+      {
+        "label": "n0.0.1 What is the one-time initial deployment cost for 200 GPU nod…",
+        "kind": "llm",
+        "cost_micros": 1620,
+        "cost": 0.00162
+      },
+      {
+        "label": "n0.0.2 What are the annual maintenance, warranty, and replacement c…",
+        "kind": "llm",
+        "cost_micros": 1915,
+        "cost": 0.001915
+      },
+      {
+        "label": "n0.1 What is the annual cost of power and cooling to operate a 20…",
+        "kind": "llm",
+        "cost_micros": 3319,
+        "cost": 0.003319
+      },
+      {
+        "label": "n0.1.0 What is the total annual electrical energy consumption (kWh/…",
+        "kind": "llm",
+        "cost_micros": 1549,
+        "cost": 0.001549
+      },
+      {
+        "label": "n0.1.2 What is the annual cooling energy requirement (kWh/year) for…",
+        "kind": "llm",
+        "cost_micros": 1958,
+        "cost": 0.001958
+      },
+      {
+        "label": "n0.2 What is the annual cost of networking, storage, and data tra…",
+        "kind": "llm",
+        "cost_micros": 3767,
+        "cost": 0.003767
+      },
+      {
+        "label": "n0.2.0 What is the annual cost of networking infrastructure for a 2…",
+        "kind": "llm",
+        "cost_micros": 2094,
+        "cost": 0.002094
+      },
+      {
+        "label": "n0.2.1 What is the annual cost of storage infrastructure for a 200-…",
+        "kind": "llm",
+        "cost_micros": 1893,
+        "cost": 0.001893
+      },
+      {
+        "label": "n0.2.2 What is the annual cost of data transfer (egress and intra-c…",
+        "kind": "llm",
+        "cost_micros": 2013,
+        "cost": 0.002013
+      },
+      {
+        "label": "n0.3 What is the annual cost of operations, staffing, and facilit…",
+        "kind": "llm",
+        "cost_micros": 5250,
+        "cost": 0.00525
+      },
+      {
+        "label": "n0.3.0 What is the annual cost of electricity and cooling for a 200…",
+        "kind": "llm",
+        "cost_micros": 1875,
+        "cost": 0.001875
+      },
+      {
+        "label": "n0.3.2 What is the annual staffing cost (salaries, benefits, payrol…",
+        "kind": "llm",
+        "cost_micros": 2464,
+        "cost": 0.002464
+      },
+      {
+        "label": "n0.3.3 What is the annual facility overhead cost (rent, insurance, …",
+        "kind": "llm",
+        "cost_micros": 2182,
+        "cost": 0.002182
+      },
+      {
+        "label": "n0.4 How does each major cost category (hardware, power, networki…",
+        "kind": "llm",
+        "cost_micros": 9013,
+        "cost": 0.009013
+      },
+      {
+        "label": "n0.4.0 How does hardware cost scale with cluster utilisation rate?",
+        "kind": "llm",
+        "cost_micros": 2242,
+        "cost": 0.002242
+      },
+      {
+        "label": "n0.4.1 How does power consumption and cooling cost scale with clust…",
+        "kind": "llm",
+        "cost_micros": 2871,
+        "cost": 0.002871
+      },
+      {
+        "label": "n0.4.2 How does networking cost scale with cluster utilisation rate…",
+        "kind": "llm",
+        "cost_micros": 5058,
+        "cost": 0.005058
+      },
+      {
+        "label": "n0.4.3 How does operations and management cost scale with cluster u…",
+        "kind": "llm",
+        "cost_micros": 2389,
+        "cost": 0.002389
+      },
+      {
+        "label": "n0.5 What is the relative magnitude of each cost component (hardw…",
+        "kind": "llm",
+        "cost_micros": 3273,
+        "cost": 0.003273
+      },
+      {
+        "label": "n0.5.0 What is the annual hardware cost (servers, storage, networki…",
+        "kind": "llm",
+        "cost_micros": 1575,
+        "cost": 0.001575
+      },
+      {
+        "label": "n0.5.1 What is the annual power cost (electricity for data centers,…",
+        "kind": "llm",
+        "cost_micros": 1529,
+        "cost": 0.001529
+      },
+      {
+        "label": "n0.5.3 What is the annual operations cost (staff labor, maintenance…",
+        "kind": "llm",
+        "cost_micros": 1279,
+        "cost": 0.001279
+      }
+    ],
+    "total_micros": 80437,
+    "reconciles": true,
+    "float_sum_equals_total": false
+  },
+  "model_spend_micros": 38395,
+  "model_spend_unexplained_micros": 42042,
+  "provenance_present": false,
+  "answer_present": true,
+  "answer_runes": 6798
+}

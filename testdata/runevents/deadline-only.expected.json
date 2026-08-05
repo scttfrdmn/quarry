@@ -1,0 +1,51 @@
+{
+  "case": "deadline-only",
+  "note": "A run with NO SPEND CAP, bound by a deadline it finished inside. The only case where cap_micros is -1, and it exists because the README stated that rule with no fixture behind it — a rule the corpus asserts and never exhibits is the kind of requirement a host implements from prose and gets wrong. -1 and NOT 0: zero reads as a cap of nothing, which would make this run — 251 micro-units against a cap of 0 — look like an infinite overspend rather than an unlimited budget. Absence is not zero (§8), at the wire.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "model",
+    "answer",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 0,
+  "outcome": "complete",
+  "bound_by": "",
+  "gaps": 0,
+  "unfunded": 0,
+  "total_micros": 251,
+  "cap_micros": -1,
+  "receipt": {
+    "rows": [
+      {
+        "label": "n0.0 What does storage cost",
+        "kind": "llm",
+        "cost_micros": 66,
+        "cost": 0.000066
+      },
+      {
+        "label": "n0.1 how does it scale",
+        "kind": "llm",
+        "cost_micros": 65,
+        "cost": 0.000065
+      },
+      {
+        "label": "n0.2 and what dominates the bill?",
+        "kind": "llm",
+        "cost_micros": 120,
+        "cost": 0.00012
+      }
+    ],
+    "total_micros": 251,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 251,
+  "model_spend_unexplained_micros": 0,
+  "provenance_present": false,
+  "answer_present": true,
+  "answer_runes": 384
+}

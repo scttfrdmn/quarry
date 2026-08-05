@@ -1,0 +1,30 @@
+{
+  "case": "no-answer-time",
+  "note": "Every node gapped, so there is no answer at all. Classified no-answer rather than time-truncated even though bound_by is latency: a host told to extend this would be extending nothing. Note gaps=4 with total_micros=0 — the deadline bit before anything was spent.",
+  "stream_version": 1,
+  "producer": "quarry-go",
+  "event_types": [
+    "quarry_stream",
+    "receipt",
+    "artifact",
+    "quarry_outcome"
+  ],
+  "exit_code": 4,
+  "outcome": "no-answer",
+  "bound_by": "latency",
+  "gaps": 4,
+  "unfunded": 0,
+  "total_micros": 0,
+  "cap_micros": 1000000,
+  "receipt": {
+    "rows": [],
+    "total_micros": 0,
+    "reconciles": true,
+    "float_sum_equals_total": true
+  },
+  "model_spend_micros": 0,
+  "model_spend_unexplained_micros": 0,
+  "provenance_present": false,
+  "answer_present": false,
+  "answer_runes": 0
+}

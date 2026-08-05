@@ -1,0 +1,4 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"answer","text":"a partial run, killed before it could report an outcome"}
+{"type":"receipt","rows":[],"total":0}
+{"type":"artifact","run_id":"synthetic-crashed","url":"file:///testdata/synth

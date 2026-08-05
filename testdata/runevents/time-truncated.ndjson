@@ -1,0 +1,6 @@
+{"type":"quarry_stream","version":1,"producer":"quarry-go"}
+{"type":"model","tier":"fake@fake","label":"fake@fake","state":"done","cost":0.000172}
+{"type":"answer","text":"[fake answer] What does storage cost — a bound exists where a point estimate does not (synthetic, no model was called, h=50b8448d)\n[fake answer] and what dominates the bill· — the evidence points one way but thinly (synthetic, no model was called, h=87de165a)"}
+{"type":"receipt","rows":[{"label":"n0.0 What does storage cost","kind":"llm","cost":0.000076},{"label":"n0.2 and what dominates the bill?","kind":"llm","cost":0.000096}],"total":0.000172}
+{"type":"artifact","run_id":"d60b26ddff0f731197028068bcf0a77b2b5f3c0708be679dc8d09bdd1fe180a8","url":"file:///testdata/time-truncated.json"}
+{"type":"quarry_outcome","outcome":"time-truncated","bound_by":"latency","gaps":2,"unfunded":0,"total_micros":172,"cap_micros":1000000}
