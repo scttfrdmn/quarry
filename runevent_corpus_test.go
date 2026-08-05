@@ -284,6 +284,246 @@ func TestSyntheticCorpusCases(t *testing.T) {
 			t.Error("a crashed stream must have NO terminal outcome; that absence is the whole signal")
 		}
 	})
+
+	t.Run("live-nodes", func(t *testing.T) {
+		// The LIVE half of the stream (#14): what a host reading `--events-json --live-events`
+		// gets while the run is still happening, followed by the fold that summarises it.
+		//
+		// WHY THIS ONE IS HAND-BUILT AND CANNOT BE DERIVED, which is a break from the
+		// captured/derived split every other case here follows. A live stream is not a
+		// projection of a record: the record holds no entry events, no allocations (by the time
+		// a node finishes, what it WAS ALLOWED is gone) and no wall-clock (NodeTiming is
+		// json:"-"). So there is no record to fold, and folding one would produce a stream
+		// nothing emits — the wired-seam-the-CLI-does-not-wire defect the corpus test's own
+		// header warns about.
+		//
+		// The values are therefore stated, and stated at the SHAPE A REAL RUN PRODUCES rather
+		// than at a convenient one: entries arriving OUT of index order (n0.2 before n0.0),
+		// because children are entered concurrently and the live --fake run confirmed the
+		// arrival order is a race; a parent with no verdict; and an unfunded sibling beside a
+		// gapped one. Timestamps are fixed constants, not a clock, so the fixture is
+		// byte-reproducible in CI (P8) — the one thing a real live capture could never be.
+		const t0 = 1_700_000_000_000_000 // a fixed instant; no clock may appear in this package
+		yes := true
+		events := []RunEvent{
+			// ONE frame, FIRST, and it is the same StreamFrame the fold uses — written at run
+			// START when live events are on, because a host must be able to refuse a stream
+			// before it reads anything it would try to parse.
+			StreamFrame(),
+			NodeEnterEvent{
+				Type: "quarry_node_enter", Version: NodeStreamVersion,
+				NodeID: "n0", ParentID: "", Depth: 0, Index: 0,
+				Statement:   "What does storage cost, how does it scale, and what dominates the bill?",
+				Scope:       map[string]string{"lab": "example"},
+				AllocMicros: 250_000, AtUnixMicros: t0,
+			},
+			// OUT OF INDEX ORDER on purpose: n0.2 arrives before n0.0. A host that drew the tree
+			// in arrival order would show a different tree on every run, which is why Index is
+			// on the wire at all — this is the fixture that makes a sort-by-index reader
+			// necessary rather than merely advisable.
+			NodeEnterEvent{
+				Type: "quarry_node_enter", Version: NodeStreamVersion,
+				NodeID: "n0.2", ParentID: "n0", Depth: 1, Index: 2,
+				Statement:   "What dominates the bill?",
+				Scope:       map[string]string{"lab": "example"},
+				AllocMicros: 80_000, AtUnixMicros: t0 + 1_000,
+			},
+			NodeEnterEvent{
+				Type: "quarry_node_enter", Version: NodeStreamVersion,
+				NodeID: "n0.0", ParentID: "n0", Depth: 1, Index: 0,
+				Statement:   "What does storage cost?",
+				Scope:       map[string]string{"lab": "example"},
+				AllocMicros: 80_000, AtUnixMicros: t0 + 1_200,
+			},
+			NodeEnterEvent{
+				Type: "quarry_node_enter", Version: NodeStreamVersion,
+				NodeID: "n0.1", ParentID: "n0", Depth: 1, Index: 1,
+				Statement: "How does it scale?",
+				Scope:     map[string]string{"lab": "example"},
+				// UNLIMITED, carried as -1 — Units' own sentinel passed through. A host must
+				// render it as "no cap" and never as a negative budget, and no other fixture in
+				// this corpus exercises an uncapped node.
+				AllocMicros: -1, AtUnixMicros: t0 + 1_400,
+			},
+			// A leaf that was verified: the "passed" state, with a measured duration.
+			NodeExitEvent{
+				Type: "quarry_node_exit", Version: NodeStreamVersion,
+				NodeID: "n0.0", Depth: 1, CostMicros: 41_000,
+				Verdict: WireVerdictPassed, BaseCase: string(BaseNoVerifier),
+				ModelVersion: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+				HaloTokens:   143, GeneratedTokens: 381, DurationMicros: 1_204_000,
+			},
+			// A leaf TIME cut short. gap:true, unfunded:false — and it has NO duration, because
+			// a node that was cut off was never bracketed. -1, not 0.
+			NodeExitEvent{
+				Type: "quarry_node_exit", Version: NodeStreamVersion,
+				NodeID: "n0.1", Depth: 1, CostMicros: 0,
+				Verdict: WireVerdictNotAssessed, Gap: true, DurationMicros: -1,
+			},
+			// A leaf the CAP priced out. unfunded:true, gap:false — the D4 pair, on one stream,
+			// so a host cannot pass this fixture while conflating them. Also zero-cost with no
+			// model version, which is what "reached no model" looks like on the wire.
+			NodeExitEvent{
+				Type: "quarry_node_exit", Version: NodeStreamVersion,
+				NodeID: "n0.2", Depth: 1, CostMicros: 0,
+				Verdict: WireVerdictNotAssessed, Unfunded: true, DurationMicros: -1,
+			},
+			// The root: an internal reduce node. It has CHILDREN and no model version — #20's
+			// residual, visible here in the live half exactly as it is in the fold — and its
+			// verdict is not_assessed, the state a bool cannot hold.
+			NodeExitEvent{
+				Type: "quarry_node_exit", Version: NodeStreamVersion,
+				NodeID: "n0", Depth: 0, CostMicros: 13_911,
+				Verdict:  WireVerdictNotAssessed,
+				Children: []string{"n0.0", "n0.1", "n0.2"},
+				Retries:  1, HaloTokens: 512, GeneratedTokens: 210,
+				DurationMicros: 3_411_000,
+			},
+			// THEN the fold, unchanged and WITHOUT a second frame. The ordering is the whole
+			// reason both halves share one fd: a node's live entry is readable as preceding the
+			// summary of it.
+			ModelEvent{Type: "model", Tier: "haiku@4.5", Label: "haiku@4.5", State: "done", Cost: 0.041},
+			AnswerEvent{Type: "answer", Text: "Storage cost is dominated by egress at this scale."},
+			ReceiptEvent{Type: "receipt", Total: 0.054911, Rows: []ReceiptRow{
+				{Label: "n0.0 What does storage cost?", Kind: KindLLM, Cost: 0.041},
+				{Label: "n0 (reduce)", Kind: KindLLM, Cost: 0.013911},
+			}},
+			ArtifactEvent{Type: "artifact", RunID: "synthetic-live-nodes", URL: "file:///testdata/synthetic.json"},
+			// TIME-TRUNCATED and not degraded, because the gapped child is the binding one: a
+			// run with both a gap and an unfunded node is bound by whichever bit, and this
+			// fixture carries the pair precisely so a host cannot infer one from the other.
+			OutcomeEvent{Type: "quarry_outcome", Outcome: OutcomeTimeTruncated, BoundBy: DenomLatency,
+				Gaps: 1, Unfunded: 1, TotalMicros: 54_911, CapMicros: 250_000},
+		}
+		// The verdict is unused as a variable but the pointer form is what a record holds;
+		// asserted rather than dropped so the projection and the fixture cannot disagree.
+		if WireVerdict(&yes) != WireVerdictPassed {
+			t.Fatal("the fixture's passed verdict must be what WireVerdict produces")
+		}
+
+		var stream strings.Builder
+		if err := WriteRunEvents(&stream, events); err != nil {
+			t.Fatal(err)
+		}
+		assertCorpusFile(t, "live-nodes.ndjson", []byte(stream.String()))
+
+		exp := ExpectationOf("live-nodes",
+			"SYNTHETIC — hand-built, and it CANNOT be derived from a record: a live stream "+
+				"carries entry events, allocations and wall-clock, none of which a record holds "+
+				"(#14). The live kinds ride StreamVersion 1 as ADDITIVE kinds, so a v1 host must "+
+				"skip them and still fold every kind it knows — the same tolerance unknown-kind "+
+				"pins, here with the kinds quarry actually emits. Carries: exactly ONE frame "+
+				"despite live events preceding the fold; entries OUT of index order (n0.2 before "+
+				"n0.0), because children are entered concurrently and arrival order is a race; a "+
+				"gapped node and an unfunded node on one stream, which must never be summed; "+
+				"alloc_micros -1 for Unlimited; duration_micros -1 for UNMEASURED, never 0; and "+
+				"verdict not_assessed, the third state a bool cannot hold.",
+			3, events)
+		b, err := WriteExpectation(exp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertCorpusFile(t, "live-nodes.expected.json", b)
+
+		// THE EXPECTATION DOES NOT COVER THE LIVE KINDS, and saying so here is the honest
+		// version rather than letting a passing test imply it does. StreamExpectation folds
+		// agate's union plus the terminal event; it has no per-node fields, and adding them
+		// would change a schema two other repos vendor for a projection they may not read.
+		// So the live half is pinned by the .ndjson being byte-identical, and by these
+		// assertions — which is why they are here and not left to the twins.
+		parsed, err := ReadStreamEvents([]byte(stream.String()))
+		if err != nil {
+			t.Fatalf("the interleaved stream must parse as NDJSON: %v", err)
+		}
+		var frames, enters, exits, lastLive, firstFold int
+		firstFold = -1
+		for i, ev := range parsed {
+			kind, _ := ev["type"].(string)
+			switch kind {
+			case "quarry_stream":
+				frames++
+			case "quarry_node_enter":
+				enters, lastLive = enters+1, i
+			case "quarry_node_exit":
+				exits, lastLive = exits+1, i
+			default:
+				if firstFold < 0 {
+					firstFold = i
+				}
+			}
+		}
+		if frames != 1 {
+			t.Errorf("exactly one version frame, got %d", frames)
+		}
+		if enters != exits || enters != 4 {
+			t.Errorf("want 4 paired live events, got %d enters / %d exits", enters, exits)
+		}
+		if lastLive > firstFold {
+			t.Errorf("live event at %d follows the fold at %d: the ordering is what one fd buys",
+				lastLive, firstFold)
+		}
+		// The D4 pair, read back OFF THE WIRE rather than off the events, because what a host
+		// sees is the bytes. Both must be present and they must be different nodes.
+		var gapped, unfunded []string
+		for _, ev := range parsed {
+			if ev["type"] != "quarry_node_exit" {
+				continue
+			}
+			id, _ := ev["node_id"].(string)
+			if ev["gap"] == true {
+				gapped = append(gapped, id)
+			}
+			if ev["unfunded"] == true {
+				unfunded = append(unfunded, id)
+			}
+			// Absence is not zero, at both new sites. Asserted on every exit so a future edit
+			// to the fixture cannot quietly introduce a measured-looking zero.
+			if d, ok := ev["duration_micros"].(float64); !ok || d == 0 {
+				t.Errorf("node %s: duration must be -1 (unmeasured) or positive, got %v — 0 is a "+
+					"plausible sub-millisecond latency and cannot mean absence", id, ev["duration_micros"])
+			}
+		}
+		if len(gapped) != 1 || len(unfunded) != 1 {
+			t.Fatalf("the fixture must carry exactly one of each denomination, got gaps %v "+
+				"unfunded %v", gapped, unfunded)
+		}
+		if gapped[0] == unfunded[0] {
+			t.Errorf("node %s is both gapped and unfunded: only TIME produces a gap, and a "+
+				"fixture that conflated them would teach a host to sum them", gapped[0])
+		}
+		// The third verdict state must OCCUR, or a host could pass this fixture with a bool.
+		var notAssessed int
+		for _, ev := range parsed {
+			if ev["verdict"] == "not_assessed" {
+				notAssessed++
+			}
+		}
+		if notAssessed == 0 {
+			t.Error("no not_assessed verdict in the fixture: the third state is the common case " +
+				"(P2), and a corpus that never carries it cannot detect its collapse to a bool")
+		}
+		// An index arriving out of order is the property that makes the Index field
+		// load-bearing; assert the fixture still has it, since a tidying edit would remove it.
+		var order []float64
+		for _, ev := range parsed {
+			if ev["type"] == "quarry_node_enter" {
+				if idx, ok := ev["index"].(float64); ok {
+					order = append(order, idx)
+				}
+			}
+		}
+		sorted := true
+		for i := 1; i < len(order); i++ {
+			if order[i] < order[i-1] {
+				sorted = false
+			}
+		}
+		if sorted {
+			t.Error("the fixture's entries are in index order, so it cannot catch a host that " +
+				"draws the tree in ARRIVAL order — the race a real run exhibits (n0, n0.2, " +
+				"n0.0, n0.1) is the reason `index` is on the wire")
+		}
+	})
 }
 
 // assertCorpusFile writes the file under -update and otherwise asserts it is

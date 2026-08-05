@@ -40,6 +40,8 @@ func runCmd(ctx context.Context, args []string) error {
 		retries    = fs.Int("retries", 1, "re-solves of a leaf that fails verification (§5)")
 		eventsJSON = fs.Bool("events-json", false,
 			"emit the framed RunEvent stream as NDJSON on stdout; human output moves to stderr (#9)")
+		liveEvents = fs.Bool("live-events", false,
+			"with --events-json, also emit per-node enter/exit events AS THEY HAPPEN (#14)")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: quarry run [flags] \"<problem statement>\"\n\n")
@@ -122,14 +124,51 @@ func runCmd(ctx context.Context, args []string) error {
 		human = os.Stderr
 	}
 
+	// --live-events is meaningless without --events-json, and refusing it is better than
+	// picking a destination for it. The events would have to go to stdout, where the human
+	// summary already is, so a host would get a stream with prose in the middle — the exact
+	// defect D1 exists to prevent. Usage, not a fault: nothing ran.
+	if *liveEvents && !*eventsJSON {
+		return usageErrf("--live-events requires --events-json\n  live node events share the " +
+			"framed stream's stdout, so there is nowhere to put them otherwise (#14 D2)")
+	}
+
+	// #14 D2: live node events INTERLEAVE with the folded stream on the same stdout, as
+	// additive kinds under StreamVersion 1 — #9 froze "adding a kind is a minor change"
+	// and "do not key on line position" for exactly this. A v1 host that does not know
+	// them skips them, which the unknown-kind corpus case pins.
+	//
+	// THE VERSION FRAME MOVES TO RUN START when they are on, and that ordering is the
+	// whole reason this block sits above the run rather than beside the fold. A host must
+	// be able to REFUSE a stream before it reads anything it would try to parse; a frame
+	// written after the first live event arrives is a frame that came too late.
+	var live *quarry.NodeStreamObserver
+	if *liveEvents {
+		if err := quarry.WriteRunEvents(os.Stdout, []quarry.RunEvent{quarry.StreamFrame()}); err != nil {
+			return fmt.Errorf("write stream frame: %w", err)
+		}
+		live = quarry.NewNodeStreamObserver(os.Stdout)
+	}
+
 	// The live tree. Wired as an Observer, which sees the run as it happens and can
 	// never affect it: the record's bytes are identical whether or not anyone is
 	// watching (P8).
+	//
+	// Both observers run when both are asked for, via MultiObserver — a person watching a
+	// terminal and a host reading the pipe are not exclusive, and the human surface is on
+	// stderr precisely so they can coexist.
 	var view *tui.Tree
 	if !*quiet {
 		view = tui.New(human)
 		view.Start()
+	}
+	switch {
+	case view != nil && live != nil:
+		e.Observer = quarry.MultiObserver{live, view}
+	case view != nil:
 		e.Observer = view
+	case live != nil:
+		e.Observer = live
 	}
 
 	runCtx, cancel := quarry.RootContext(ctx, caps, start)
@@ -169,14 +208,32 @@ func runCmd(ctx context.Context, args []string) error {
 		if prov := quarry.ProvenanceOf(rec, nil); prov.StabilityKnown {
 			pass = &prov
 		}
+		// EXACTLY ONE VERSION FRAME PER STREAM (#14 D2). With --live-events the frame went
+		// out before the run, so the fold must not write a second one: two contract
+		// declarations read as two concatenated streams.
+		fold := quarry.HostRunEvents
+		if live != nil {
+			fold = quarry.HostRunEventsNoFrame
+		}
 		// A file URL, so the pointer back to the citable record actually resolves for a
 		// host on the same machine — which a subprocess supervisor is by construction.
-		if err := quarry.WriteRunEvents(os.Stdout, quarry.HostRunEvents(rec, recordURL(path), pass)); err != nil {
+		if err := quarry.WriteRunEvents(os.Stdout, fold(rec, recordURL(path), pass)); err != nil {
 			// A write failure here is a FAULT and must not be swallowed. A host reading a
 			// truncated stream sees a run that crashed, which is the correct reading — so
 			// reporting success while having written half a stream is the one outcome that
 			// makes the exit code lie.
 			return fmt.Errorf("write event stream: %w", err)
+		}
+	}
+
+	// A live write failure is reported AFTER the fold, not when it happened. The observer
+	// deliberately does not fail the run — an observer that killed the run it observes is
+	// what P8's non-perturbation rule forbids — so the record is valid and written, and
+	// this is the fault the host needs to hear about. Reported last so the terminal outcome
+	// still reaches a host that is still reading.
+	if live != nil {
+		if err := live.Err(); err != nil {
+			return err
 		}
 	}
 

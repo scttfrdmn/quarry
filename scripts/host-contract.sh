@@ -108,6 +108,131 @@ assert sum(1 for k in kinds if k.startswith("quarry_")) == 2, kinds
 print(f"  ok: {len(evs)} events, version 1, {out['total_micros']} micro-units")
 PY
 
+echo "== #14: the live node stream rides the same stdout, framed once, ahead of the fold"
+
+# Again WITHOUT --quiet, and here that is the point rather than a habit: --live-events
+# and the live tree write at the same time, one to stdout and one to stderr, and the
+# defect this catches is the two surfaces crossing. A person watching a terminal and a
+# host reading the pipe are not exclusive — MultiObserver exists so they coexist — so
+# the check has to run them together.
+"$Q" run --fake --cap 0.25 --depth 2 --events-json --live-events --out "$work/l.json" "$Q3" \
+	>"$work/l.ndjson" 2>"$work/l.err"
+
+# STDOUT FIRST, for the reason the D1 pair above documents at length: the pair is
+# violated jointly, and checking the quieter surface first names the wrong cause.
+if grep -vn '^{' "$work/l.ndjson"; then
+	echo "FAIL: non-JSON on stdout under --events-json --live-events. The live events share" >&2
+	echo "      the fold's fd, so any print site that forgot the redirect now corrupts a" >&2
+	echo "      host's stream in the MIDDLE of a run rather than at the end of one." >&2
+	exit 1
+fi
+
+if [ ! -s "$work/l.err" ]; then
+	echo "FAIL: the human surface vanished with --live-events. The live tree and the node" >&2
+	echo "      stream are different consumers of one seam, not alternatives." >&2
+	exit 1
+fi
+
+python3 - "$work/l.ndjson" <<'PY'
+import json, sys
+
+raw = open(sys.argv[1], "rb").read()
+assert raw.endswith(b"\n"), "the stream must end in a newline"
+evs = [json.loads(l) for l in raw.splitlines()]
+kinds = [e["type"] for e in evs]
+
+# EXACTLY ONE FRAME, FIRST. With --live-events it is written at run START — a host must
+# be able to refuse a stream before it reads anything it would parse — so the fold must
+# not add a second. Two declarations read as two concatenated streams.
+assert kinds.count("quarry_stream") == 1, f"want exactly one version frame, got {kinds.count('quarry_stream')}"
+assert kinds[0] == "quarry_stream", f"the frame must come first, got {kinds[0]}"
+# NO BUMP. Adding a kind is a MINOR change under #9's own frozen rule, which is the whole
+# basis for putting the live events here rather than on a second fd.
+assert evs[0]["version"] == 1, (
+    f"stream_version moved to {evs[0]['version']} for an ADDITIVE change; #9 froze that as "
+    "minor, and a bump makes every v1 host refuse a stream it could have read"
+)
+
+enters = [e for e in evs if e["type"] == "quarry_node_enter"]
+exits = [e for e in evs if e["type"] == "quarry_node_exit"]
+assert enters and exits, "no live events on the stream: --live-events did nothing"
+assert len(enters) == len(exits), (
+    f"{len(enters)} enters and {len(exits)} exits — an unpaired enter leaves a node drawn "
+    "as permanently in flight"
+)
+assert len(enters) > 1, f"the fixture must decompose, got {len(enters)} node(s)"
+
+# Every live event carries its OWN version, because a host may attach mid-stream where
+# the frame has already gone past.
+for e in enters + exits:
+    assert e["node_stream_version"] == 1, e
+
+# THE ORDERING IS THE WHOLE VALUE of one fd over two. A node's live entry must be
+# readable as PRECEDING the fold that summarises it; two streams would give no such
+# guarantee, which is why a second destination was rejected.
+fold = [i for i, k in enumerate(kinds) if not k.startswith("quarry_")]
+live = [i for i, k in enumerate(kinds) if k.startswith("quarry_node_")]
+assert max(live) < min(fold), (
+    f"a live event at {max(live)} lands after the fold began at {min(fold)}: the interleaving "
+    "is backwards and a host cannot read an entry as preceding its summary"
+)
+# And the terminal outcome still closes it — scanned backwards, never read off the last
+# line. Its ABSENCE is how a host detects a crash, so live output must not consume it.
+assert kinds[-1] == "quarry_outcome", kinds[-6:]
+
+# THREE-STATE FIELDS SURVIVE TO THE WIRE (D3), asserted on real bytes and not on the
+# projection alone. Each is a value no measurement can produce, because the alternative
+# — 0, or false — is a number a dashboard would render as measured.
+for e in exits:
+    assert e["verdict"] in ("passed", "failed", "not_assessed"), e
+    # -1 is UNMEASURED; a real duration is positive. 0 must never appear: it is a
+    # plausible sub-millisecond latency, which is exactly why it cannot mean absence.
+    assert e["duration_micros"] == -1 or e["duration_micros"] > 0, e
+    # false is a MEASUREMENT: both keys present on every event, so a host can tell "this
+    # node was funded" from "this producer does not report funding".
+    assert "gap" in e and "unfunded" in e, e
+    # THE TWO DENOMINATIONS ARE NEVER THE SAME NODE (D4). Only TIME produces a gap; the
+    # cap pricing a node out is planned degradation inside authority.
+    assert not (e["gap"] and e["unfunded"]), f"a node cannot be both gapped and unfunded: {e}"
+
+# A run this size verifies nothing at most nodes (P2 makes verifier availability the
+# terminator), so not_assessed must actually OCCUR here — otherwise the three-state check
+# above has only ever seen two states and would pass a wire that dropped the third.
+verdicts = {e["verdict"] for e in exits}
+assert "not_assessed" in verdicts, (
+    f"no unchecked node in a {len(exits)}-node run ({verdicts}): the third state is the "
+    "common case, and a check that never meets it cannot detect its collapse"
+)
+
+# The entry event's own absence-not-zero site. --cap is set, so every allocation is a
+# real positive figure; -1 is the Unlimited sentinel and 0 would be a node allowed
+# nothing, which the floor refuses rather than funds.
+for e in enters:
+    assert e["alloc_micros"] == -1 or e["alloc_micros"] > 0, e
+    assert e["at_unix_micros"] > 0, f"a wired clock must stamp the entry: {e}"
+
+print(f"  ok: 1 frame, {len(enters)} live pairs ahead of the fold, verdicts {sorted(verdicts)}")
+PY
+
+# --live-events without --events-json is REFUSED, and it is usage rather than a fault:
+# nothing ran. Checked from outside the process because the pair of numbers is what a
+# host branches on, and cmd/quarry/main_test.go can only see the mapping.
+set +e
+"$Q" run --fake --quiet --live-events --cap 0.25 "anything" >"$work/refused.out" 2>/dev/null
+refused=$?
+set -e
+[ "$refused" = "2" ] || {
+	echo "FAIL: --live-events without --events-json must exit 2 (usage), got $refused. The" >&2
+	echo "      events would have to land on the human's stdout, so refusing is better than" >&2
+	echo "      choosing a destination — and 1 would report a fixable flag pair as a fault." >&2
+	exit 1
+}
+[ ! -s "$work/refused.out" ] || {
+	echo "FAIL: the refused invocation wrote to stdout. Nothing ran, so there is nothing a" >&2
+	echo "      host should be able to parse." >&2
+	exit 1
+}
+
 echo "== D4: the exit code is a vocabulary, observed from outside the process"
 
 # Each code is taken from a REAL invocation rather than a constructed error, because

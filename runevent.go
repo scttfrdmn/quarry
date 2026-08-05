@@ -171,6 +171,18 @@ type StreamEvent struct {
 
 func (StreamEvent) eventType() string { return "quarry_stream" }
 
+// StreamFrame builds the opening version frame.
+//
+// A CONSTRUCTOR RATHER THAN A LITERAL AT EACH SITE because there are now two sites and
+// they must agree: HostRunEvents puts it in front of the fold, and `quarry run
+// --live-events` writes it at run START, since live events precede the fold and a host
+// must be able to refuse a stream before it reads anything it would parse (#14 D2). Two
+// hand-written literals of the frame is how the producer string or the version comes to
+// differ between the two orderings of the same contract.
+func StreamFrame() StreamEvent {
+	return StreamEvent{Type: "quarry_stream", Version: StreamVersion, Producer: "quarry-go"}
+}
+
 // OutcomeEvent closes a framed stream, stating how the run ended (#9 D4).
 //
 // THE TERMINAL EVENT, and its presence is as load-bearing as its content. A host that
@@ -330,10 +342,27 @@ func RunEvents(r RunRecord, recordURL string, prov *Provenance) []RunEvent {
 // stream; the outcome lets it TRUST one it read to EOF. Only the second distinguishes a
 // finished run from a killed one, since NDJSON yields whole lines either way.
 func HostRunEvents(r RunRecord, recordURL string, prov *Provenance) []RunEvent {
-	events := []RunEvent{StreamEvent{
-		Type: "quarry_stream", Version: StreamVersion, Producer: "quarry-go",
-	}}
-	events = append(events, RunEvents(r, recordURL, prov)...)
+	return append([]RunEvent{StreamFrame()}, HostRunEventsNoFrame(r, recordURL, prov)...)
+}
+
+// HostRunEventsNoFrame is HostRunEvents WITHOUT the opening version frame, for a stream
+// that has already been framed — which is what `--live-events` produces (#14 D2).
+//
+// THE TERMINAL OUTCOME IS STILL HERE; only the OPENING frame is omitted. A stream must
+// end with the outcome whether or not it began with live events, because its absence is
+// the only in-band signal that a run was killed.
+//
+// EXACTLY ONE FRAME PER STREAM is the rule this exists to keep. When live node events
+// precede the fold, the frame is written at run start (a host must be able to refuse a
+// stream before it parses anything), so folding a second frame in behind them would give
+// a consumer two contract declarations for one stream — readable as two concatenated
+// streams, which is a different and wrong thing.
+//
+// Split as a function rather than a bool parameter on HostRunEvents so neither caller
+// can pass the wrong value, and so the frame's position stays a property of the caller's
+// ORDERING rather than of a flag.
+func HostRunEventsNoFrame(r RunRecord, recordURL string, prov *Provenance) []RunEvent {
+	events := RunEvents(r, recordURL, prov)
 	return append(events, OutcomeEvent{
 		Type:     "quarry_outcome",
 		Outcome:  r.Classify(),
