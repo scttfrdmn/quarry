@@ -4,8 +4,16 @@ Vendored fixtures for a host that spawns `quarry run --events-json` and reads it
 stdout. Frozen by [#9](https://github.com/scttfrdmn/quarry/issues/9); consumed by
 **bucktooth** (Go) and **rustynail** (Rust).
 
-Produced by `quarry` at commit **`f89f59f`** on branch `host-event-stream`, stream
-version **1**, producer **`quarry-go`**.
+Produced by `quarry` on branch `host-event-stream`, stream version **1**, producer
+**`quarry-go`**. The records were captured over the course of the branch, so the
+commit that landed them is the reference — **`71682ab`**, the #9 commit. An earlier
+draft of this line named `f89f59f`, which is the branch *point* and predates both
+the rune-truncation fix and the `deadline-only` and `unicode-long` captures: it
+would have sent someone reproducing a case to code that could not produce it.
+
+**A commit hash here is stale the moment a record is recaptured**, and the failure
+is silent — nothing checks it. If you are reproducing a case and the shape
+disagrees, trust `git log -- testdata/runevents/<case>.json` over this line.
 
 ## What is in here
 
