@@ -526,6 +526,16 @@ func replayExecutor(orig quarry.RunRecord, model string) *quarry.Executor {
 	seams := quarry.Replayable(orig)
 	return &quarry.Executor{
 		Planner: seams.Planner,
+		// ProviderSolver, DELIBERATELY, even though the run used BudgetedSolver. Not an
+		// oversight and not a mismatch: RecordedProvider indexes on the recorded Problem
+		// and looks up on the prompt it is handed, so the solver a replay needs is the one
+		// that passes the BARE STATEMENT. BudgetedSolver here would send a wrapped prompt,
+		// miss every leaf, and report "replay diverged" against a faithful record.
+		//
+		// The corollary is the reason prompt construction lives in the Solver rather than
+		// in the Provider: the budgeted prompt never enters the record, so the recorded key
+		// stays stable no matter how the prompt is later reworded. Asserted in
+		// provider/replay_budgeted_test.go, both directions.
 		Solver:  quarry.ProviderSolver{Provider: seams.Provider, Model: model},
 		Reducer: seams.Reducer,
 		// Now is a FIXED instant and the Clock is deliberately nil. A replay that timed

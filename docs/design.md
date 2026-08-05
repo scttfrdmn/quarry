@@ -169,6 +169,50 @@ solve plus one verification, that the reserve is intact, and that declared leave
 allocated recursion budget. Per P3 the planner is the node most worth verifying and previously had
 only adversarial checking available; budget-conditioning makes part of it checkable for free.
 
+### How a leaf is told about its budget
+
+P9 is about *planning*, and for a while that is where it was implemented: the planner received
+its balance and the leaf — the only thing in the system that actually spends money — received an
+`Allocation` and discarded it. That is P9 holding where it is cheap and failing where it counts.
+The first live run is the evidence: across 18 answered leaves, generated tokens ran 249 / 381 /
+1008 (min / median / max) against a **30-token halo** — a bare sub-question in, an essay out —
+while five of thirty nodes went unfunded and 68% of the cap went unspent.
+
+**The budget reaches the leaf as a word count, never as currency.** Same reason weights are
+relative (above): a model told *you have $0.002* is being asked to price tokens it cannot see, so
+its brevity would track its guess about pricing rather than the budget. A word count is a
+constraint the system derived from a number it actually has. Alongside it go shape rules — no
+preamble, no restatement, conclusion first, no headings or tables unless genuinely tabular —
+which are what make the word count achievable and which also attack §8's structural-claim problem
+at its source, since headings and table rows are what the mechanical extractor counts as claims.
+
+**The prompt is a request; the ceiling is the cap.** A model asked for brevity may decline, and
+models routinely do, so the prompt alone would be a request dressed as a constraint. A ceiling
+alone would truncate mid-sentence with no explanation. Both, and — this is the part that is a
+design rule rather than an implementation detail — **derived from one number**, because two
+independently configured limits drift and the failure when they drift is silent: a prompt asking
+for 400 words under a 200-token ceiling produces confident answers that stop mid-sentence.
+
+The ceiling is clamped below as well as above, and the lower clamp is not a rounding convenience.
+A node allocated almost nothing prices out at a handful of tokens, and a handful of tokens buys a
+fragment that costs real money, asserts nothing, and enters the record as an *answer*. Deciding a
+node is too poor to be worth solving is the **floor's** job (§3), which refuses it outright and
+says so; a ceiling that silently degraded the same nodes to fragments would be a second, invisible
+floor with none of the first's bookkeeping.
+
+**The recorded replay key is the statement, not the prompt** — so prompt construction belongs in
+the Solver, above the Provider. §7's recorded provider indexes samples by the recorded problem and
+looks them up by the prompt it is handed; those coincide only while the solver passes the bare
+statement. Wrapping the prompt one layer lower would make every leaf replay miss and report
+"replay diverged" against a faithful record, which is the failure P8 exists to prevent rather than
+to produce. The consequence is that the bare-statement solver is not a leftover: it is precisely
+what replay wires, and the budget-conditioned solver in a replay is a defect, not a consistency
+fix.
+
+Sizing the ceiling means converting currency to tokens, which needs a price sheet, so it lives at
+the provider edge rather than in the core — the same boundary that keeps the core free of the
+network.
+
 ### Planner and Reducer are distinct agents
 
 Not two calls to one instance. The Reducer must see what returned without inheriting the priors
