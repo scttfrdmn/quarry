@@ -394,6 +394,37 @@ should tell them so — the deadline field is a price control, not just a schedu
 
 Deferred runs also sit well with P5: work waiting in a queue or table accrues no idle cost.
 
+### The due date is reachable from outside the process, and buys nothing yet
+
+Added by [#11](https://github.com/scttfrdmn/quarry/issues/11), which found that the paragraphs
+above described a capability **no caller could reach**. `Caps` carried `Latency` *and* `Due`, and
+`Deferrable()` had been written and tested — but `cmd/quarry` offered only `--deadline`, a relative
+duration, so `Due` was never set by anything and `Deferrable()` never returned true outside its own
+unit test. The price control was fully specified and structurally dark.
+
+**A host's deadline is absolute, and the host resolves it.** `--due` (or `QUARRY_DUE`) takes an
+RFC3339 instant. The host owns the clock: it knows when the request arrived and what it promised.
+quarry must not call `time.Now()` in the root package, so a *relative* duration from a host would
+have to be resolved against an instant quarry is not supposed to read — which is why the absolute
+form is the one that crosses the boundary and the relative form stays the human's.
+
+**A due date must not imply a latency cap.** `Deferrable()` is `Due` set *and* `Latency` zero, so a
+resolver that helpfully derived one from the other would record a due date and silently price the
+run as on-demand: it would look right and cost more. The run is bound by *when*, not by *how long*.
+
+**Nothing prices off `Deferrable()` yet, and this is the honest statement of that.** `Due` has one
+real consumer — `RootContext`, which takes the earlier of `Latency` and `Due` as the context
+deadline — so `--due` genuinely bounds a run. What it does not yet do is buy anything cheaper: the
+discount needs a provider that can offer batch or off-peak, and this section names ember as the
+executor for that mode rather than a component built here. #11 makes the denomination **reachable**;
+the discount is a separate build. A doc that claimed otherwise would be describing the flag's
+motivation as its effect.
+
+An **expired** due date is accepted, not refused. It is not malformed — a host that queued a request
+reaches it by ordinary delay — and this section's own miss semantics say whatever exists must be
+returnable *now*. The faithful outcome is a truncated record whose gaps are named, not a refusal
+that produces no artifact at all.
+
 ### Executor
 
 Deadline-denominated runs are precisely the workload
