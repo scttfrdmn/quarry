@@ -29,7 +29,7 @@ func runCmd(ctx context.Context, args []string) error {
 		capS      = fs.String("cap", "1.00", "spend cap (the contract, P4); required unless --deadline is set")
 		capMicros = fs.Int64("cap-micros", 0,
 			"spend cap in integer micro-units — the host path, no float at the boundary (#11 D1)")
-		floorS   = fs.String("floor", "0.0002", "smallest allocation worth giving a child (§3)")
+		floorS   = fs.String("floor", defaultFloorS, "smallest allocation worth giving a child (§3)")
 		deadline = fs.Duration("deadline", 0, "latency cap; a run may be bound by time instead of money (§3.1)")
 		due      = fs.String("due", "",
 			"absolute RFC3339 deadline; the host owns the clock (#11 D2). a due date with no --deadline is deferrable (§3.1)")

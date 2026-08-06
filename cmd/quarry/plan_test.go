@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -468,4 +469,150 @@ func TestShowNamesTheApprovedPlan(t *testing.T) {
 	if strings.Contains(buf2.String(), "APPROVED") {
 		t.Fatal("an ungated record must not be shown as approved")
 	}
+}
+
+// THE COMMAND `plan` PRINTS MUST ACTUALLY RUN — parsed out of the summary, split the way
+// a shell would, and executed.
+//
+// THIS IS THE ONE TEST IN THIS FILE THAT DOES NOT BUILD ITS OWN ARGV, and that is the
+// point. Every other test here calls runCmd with hand-assembled flags, which is why the
+// suite was green while the printed command was missing the problem statement entirely:
+// `run --plan` requires it (Authorizes compares it), so the copy-pasteable line the gate
+// hands its operator exited 2 with usage text. A test that constructs the state it means
+// to check cannot discover that nothing produces it.
+//
+// The statement here carries an apostrophe and a comma on purpose: it is arbitrary text,
+// and an unquoted one reaches `run` as several argv entries.
+func TestTheCommandThePlanSummaryPrintsActuallyExecutes(t *testing.T) {
+	const tricky = "What does Amazon's storage cost, how does it scale, and what dominates the bill?"
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.json")
+
+	// --floor and --scope are non-default so the summary must print them too: both are
+	// compared by Authorizes, and an omitted --scope is the EMPTY scope, which is wider
+	// than the plan's and refused under P6.
+	if err := planCmd(context.Background(), []string{
+		"--fake", "--cap", "0.25", "--depth", "2", "--floor", "0.0005",
+		"--scope", "team=a,project=x", "--out", planPath, tricky,
+	}); err != nil {
+		t.Fatalf("quarry plan: %v", err)
+	}
+	art, err := readPlanArtifact(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	summarizePlan(newPrinter(&buf), art, nil, planPath, 0, true)
+	line := printedRunCommand(t, buf.String())
+
+	argv, err := shellSplit(line)
+	if err != nil {
+		t.Fatalf("the printed command is not shell-parseable: %v\n  %s", err, line)
+	}
+	if len(argv) < 2 || argv[0] != "quarry" || argv[1] != "run" {
+		t.Fatalf("expected a `quarry run` command, got %q", line)
+	}
+	// The statement must survive quoting as ONE argument, apostrophe intact.
+	if got := argv[len(argv)-1]; got != tricky {
+		t.Fatalf("the statement must round-trip through the shell as one argv entry:\n  got  %q\n  want %q", got, tricky)
+	}
+
+	// AND IT MUST BE AUTHORIZED. Executing it is the guarantee; asserting the flags are
+	// present would pass on a command with the right words in the wrong values.
+	// --out and --quiet go BEFORE the statement: Go's flag package stops at the first
+	// positional, so appending them after it would fold them into the statement text. That
+	// is a property of the printed command too, and the reason the statement is printed
+	// LAST — a caller adding flags of their own adds them where they work.
+	recPath := filepath.Join(dir, "r.json")
+	flags := argv[2 : len(argv)-1]
+	pasted := append(append([]string{}, flags...), "--out", recPath, "--quiet", argv[len(argv)-1])
+	if err := runCmd(context.Background(), pasted); err != nil {
+		t.Fatalf("the command quarry plan printed must run:\n  %s\n  %v", line, err)
+	}
+	rec, err := readRecord(recPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.PlanID != art.PlanID {
+		t.Fatalf("the pasted command ran an unapproved plan: record names %q, artifact is %q",
+			rec.PlanID, art.PlanID)
+	}
+}
+
+// printedRunCommand pulls the `quarry run ...` line out of a summary.
+//
+// Located by the label above it rather than by scanning for "quarry run", so a summary
+// that stopped printing the command fails here instead of silently matching prose
+// elsewhere that happens to mention the verb.
+func printedRunCommand(t *testing.T, summary string) string {
+	t.Helper()
+	lines := strings.Split(summary, "\n")
+	for i, l := range lines {
+		if strings.Contains(l, "execute exactly this plan with:") {
+			if i+1 >= len(lines) {
+				t.Fatal("the summary announces a command and then ends")
+			}
+			cmd := strings.TrimSpace(lines[i+1])
+			if !strings.HasPrefix(cmd, "quarry run") {
+				t.Fatalf("the line after the label is not a run command: %q", cmd)
+			}
+			return cmd
+		}
+	}
+	t.Fatalf("the summary must tell the operator how to execute the plan:\n%s", summary)
+	return ""
+}
+
+// shellSplit splits a POSIX command line, handling the single-quoting shellQuote emits.
+//
+// Deliberately minimal — it understands single quotes, double quotes and backslash escapes
+// and nothing else, because the assertion is that the printed line needs no more than
+// that. A command requiring shell features beyond quoting would not be safely
+// copy-pasteable in the first place, so failing to parse it is the correct outcome.
+func shellSplit(s string) ([]string, error) {
+	var out []string
+	var cur strings.Builder
+	inWord := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case ' ', '\t':
+			if inWord {
+				out = append(out, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		case '\'':
+			inWord = true
+			j := strings.IndexByte(s[i+1:], '\'')
+			if j < 0 {
+				return nil, fmt.Errorf("unterminated single quote at %d", i)
+			}
+			cur.WriteString(s[i+1 : i+1+j])
+			i += j + 1
+		case '"':
+			// REFUSED, NOT PARSED. A real shell expands $, ` and \ inside double quotes, so a
+			// statement containing "$HOME" or a backtick would reach `run` as something other
+			// than what was planned. Accepting them here made this splitter MORE forgiving than
+			// a shell and let a %q-quoted command pass the test while being unsafe to paste —
+			// found by reintroducing exactly that defect. Only single quotes are safe.
+			return nil, fmt.Errorf("double-quoted word at %d: a shell expands $, ` and \\ inside "+
+				"double quotes, so the printed command must single-quote instead", i)
+		case '\\':
+			if i+1 >= len(s) {
+				return nil, fmt.Errorf("trailing backslash")
+			}
+			inWord = true
+			cur.WriteByte(s[i+1])
+			i++
+		default:
+			inWord = true
+			cur.WriteByte(c)
+		}
+	}
+	if inWord {
+		out = append(out, cur.String())
+	}
+	return out, nil
 }

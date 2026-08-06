@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // These tests ARE the specification for the plan artifact (#15, §9's approval gate).
@@ -220,6 +221,77 @@ func TestPlanRefusesADifferentProblem(t *testing.T) {
 	// what decides which cause gets blamed.
 	if !strings.Contains(err.Error(), "different problem") {
 		t.Fatalf("the message must name the problem mismatch, not a cap: %v", err)
+	}
+}
+
+// The refusal must show WHERE the statements differ, not the first 60 characters of each.
+//
+// THIS IS A DEFECT THE SUITE COULD NOT HAVE FOUND ABOVE, and the reason is instructive:
+// TestPlanRefusesADifferentProblem's two statements diverge at byte 12, so any truncation
+// window shows it. The message was `%.60q` on each side, which clipped two long statements
+// sharing a long prefix down to the SAME visible text and printed them under the words "a
+// different problem" — the operator is told two identical lines differ. Found by pasting
+// the command `quarry plan` prints, which is also how the missing statement in that command
+// was found.
+func TestTheProblemMismatchShowsWhereTheStatementsDiverge(t *testing.T) {
+	const planned = "What does Amazon's storage cost, how does it scale, and what dominates the bill?"
+	asked := strings.TrimSuffix(planned, "?") // one byte, past any 60-char prefix window
+
+	art := artifactFor(t, problem(planned), planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
+	err := art.Authorizes(problem(asked), planCaps(FromFloat(1)), 0, 2, FakePlannerModel)
+	if !errors.Is(err, ErrPlanNotAuthorized) {
+		t.Fatalf("a trailing-byte difference is still a different problem, got %v", err)
+	}
+	msg := err.Error()
+
+	// The two rendered statements must not be the SAME text — that is the defect, stated as
+	// the guarantee rather than as a mechanism. Asserting "contains the byte offset" alone
+	// would pass on a message that still printed two identical lines beside it.
+	if got := strings.Count(msg, planned[:60]); got > 0 {
+		t.Fatalf("the message shows a common prefix window, which cannot distinguish the two:\n%s", msg)
+	}
+	if !strings.Contains(msg, `dominates the bill?"`) || !strings.Contains(msg, `dominates the bill"`) {
+		t.Fatalf("both statements must be shown clipped around the divergence:\n%s", msg)
+	}
+	if !strings.Contains(msg, "differ at byte 79") {
+		t.Fatalf("the message must locate the divergence:\n%s", msg)
+	}
+}
+
+// quoteAround must not cut a multi-byte rune in half.
+//
+// The window arithmetic is in BYTES because the divergence offset is, so a statement with
+// non-ASCII text ahead of the difference would otherwise be clipped mid-character and the
+// message about a text difference would itself be mojibake.
+func TestTheMismatchMessageClipsOnRuneBoundaries(t *testing.T) {
+	planned := strings.Repeat("café… ", 20) + "alpha"
+	asked := strings.Repeat("café… ", 20) + "beta"
+
+	art := artifactFor(t, problem(planned), planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
+	err := art.Authorizes(problem(asked), planCaps(FromFloat(1)), 0, 2, FakePlannerModel)
+	if err == nil {
+		t.Fatal("statements differing in their tail must be refused")
+	}
+	msg := err.Error()
+
+	// THE OBVIOUS ASSERTIONS HERE ARE VACUOUS, and finding that out is why this comment is
+	// long. `utf8.ValidString(msg)` and a check for U+FFFD both PASS with the rune guard
+	// removed, because strconv.Quote renders a stray continuation byte as the escape text
+	// `\x80` — valid UTF-8 describing invalid bytes. The guarantee is that the window landed
+	// on a character boundary, and the only visible evidence of that is the ABSENCE of a
+	// hex-byte escape in the quoted output.
+	if strings.Contains(msg, `\x`) {
+		t.Fatalf("the window cut a rune in half — quoted as a raw byte escape:\n%s", msg)
+	}
+	// Non-vacuity of the check above: the fixture must actually place a multi-byte rune
+	// across the window's start, or the assertion is testing nothing. The divergence sits at
+	// byte 180 and the window opens 20 bytes earlier, mid-ellipsis.
+	if d := commonPrefixLen(planned, asked); d != 180 {
+		t.Fatalf("fixture no longer diverges where this test needs it (byte %d, want 180): "+
+			"the rune-boundary case may not be exercised at all", d)
+	}
+	if !utf8.ValidString(msg) {
+		t.Fatalf("the refusal message is not valid UTF-8: %q", msg)
 	}
 }
 

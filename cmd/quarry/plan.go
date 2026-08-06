@@ -33,12 +33,42 @@ import (
 // spend money on a decomposition no planner endorsed while the record named an approval.
 // The content hash enforces this mechanically rather than asking.
 
+// defaultFloorS is the `--floor` default BOTH verbs carry, in one place so they cannot
+// drift. If they did, a plan and the run executing it would derive different floors from
+// the same absent flag, and Authorizes would refuse over a difference nobody typed.
+const defaultFloorS = "0.0002"
+
+// defaultFloor is defaultFloorS parsed, for the summary's "print it only if it differs"
+// check. Panics on a malformed constant, which is a build-time fact, not a runtime one.
+var defaultFloor = mustFloor()
+
+func mustFloor() quarry.Units {
+	u, err := capFlag(defaultFloorS)
+	if err != nil {
+		panic("malformed defaultFloorS: " + err.Error())
+	}
+	return u
+}
+
+// shellQuote renders a string safe to paste into a POSIX shell.
+//
+// NEEDED BECAUSE THE STATEMENT IS ARBITRARY TEXT — a research question routinely holds
+// spaces, apostrophes ("what does Amazon's egress cost?") and question marks, and an
+// unquoted one would reach `run` as several argv entries or, with a glob character, as
+// whatever the shell matched. Single-quoted, with each embedded quote closed, backslash-
+// escaped and reopened; inside single quotes no character is special, so nothing else
+// needs handling. (Do not spell that escape out in this comment: gofmt rewrites a doubled
+// ASCII quote into a typographic one, which then fails `gofmt -l`.)
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func planCmd(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("plan", flag.ExitOnError)
 	var (
 		capS      = fs.String("cap", "1.00", "the spend cap the plan is planned AGAINST (P9); the plan is only valid for it (D1)")
 		capMicros = fs.Int64("cap-micros", 0, "the spend cap in integer micro-units — the host path (#11 D1)")
-		floorS    = fs.String("floor", "0.0002", "smallest allocation worth giving a child (§3); part of what is approved")
+		floorS    = fs.String("floor", defaultFloorS, "smallest allocation worth giving a child (§3); part of what is approved")
 		deadline  = fs.Duration("deadline", 0, "latency cap (§3.1)")
 		due       = fs.String("due", "", "absolute RFC3339 deadline; the host owns the clock (#11 D2)")
 		depth     = fs.Int("depth", 3, "max recursion depth — a BACKSTOP, not the design (P2)")
@@ -367,8 +397,27 @@ func summarizePlan(w *printer, art quarry.PlanArtifact, pv *quarry.PlanVariance,
 	if fake {
 		w.printf(" --fake")
 	}
-	w.printf(" --cap %s --depth %d\n", art.Caps.Spend, art.Depth)
-	w.println("  the cap and depth must MATCH: this artifact does not authorise a run under others (D1).")
+	w.printf(" --cap %s --depth %d", art.Caps.Spend, art.Depth)
+	if art.Floor != defaultFloor {
+		// Only when it differs from what `run` would default to — Authorizes compares the
+		// floor, so a non-default one that went unprinted would refuse the pasted command.
+		w.printf(" --floor %s", art.Floor)
+	}
+	if len(art.Problem.Scope.Tags) > 0 {
+		// The scope belongs here for the same reason the cap does: Authorizes compares it,
+		// and an omitted --scope is not "unspecified" but the EMPTY scope, which is wider
+		// than the plan's and refused as a P6 violation.
+		w.printf(" --scope %s", shellQuote(scopeStr(art.Problem.Scope)))
+	}
+	// THE STATEMENT IS PART OF THE COMMAND, and leaving it out made this line a copy-paste
+	// that exits 2 — found by running the binary, not by the suite, which called runCmd
+	// with hand-built args and so could not notice that the text it prints is unusable.
+	// `run --plan` requires it deliberately: Authorizes compares the statement, so the
+	// caller restates what it asked for and the artifact confirms it, rather than the file
+	// silently supplying both the question and its own authorisation.
+	w.printf(" %s\n", shellQuote(art.Problem.Statement))
+	w.println("  the cap, depth, floor and scope must MATCH: this artifact does not authorise a run")
+	w.println("  under others (D1), and the statement is restated so the artifact can confirm it.")
 }
 
 // readPlanArtifact loads an artifact and REFUSES a file that does not hash to its own

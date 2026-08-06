@@ -209,6 +209,27 @@ division of the money across it; each child then plans within an allocation that
 a child re-planning is not spending authority nobody granted. Approving every node would make the
 gate a debugger.
 
+**The second phase restates the problem rather than reading it out of the artifact.** `run --plan`
+requires the statement on the command line even though the file already carries it, and the
+apparent redundancy is the check: the artifact *confirms* what the caller asked for. A file that
+supplied both the question and its own authorisation could not detect a host that pointed at the
+wrong plan, which is the likeliest mistake in a directory of them.
+
+Two consequences of that, both of which shipped broken and are recorded because they are the kind
+of defect a passing test suite does not see:
+
+- **The command the gate prints must be runnable as printed.** `quarry plan` ends by telling the
+  operator how to execute what it just wrote, and every value `Authorizes` compares — cap, depth,
+  floor, scope, statement — has to appear in that line, single-quoted, with the statement last so a
+  caller's own flags land where Go's `flag` package still reads them. This is one of the few places
+  where prose output *is* an interface, and it was wrong: the statement was omitted entirely, so the
+  copy-pasteable line exited 2 with usage text. Invisible to the suite because every test built its
+  own argv.
+- **A refusal must show where two statements differ, not their first sixty characters.** Truncating
+  both sides to a common prefix prints two identical-looking lines under the words "a different
+  problem" — precisely the case the error exists to explain. The window is centred on the divergence
+  and clipped on a rune boundary.
+
 **Declining is a first-class outcome.** A planner that refuses to split (P1) produces a valid,
 approvable artifact that runs as a single node — not an error and not an empty file. That case is
 the routine one under `--fake`, whose planner declines on clause length, and a gate that treated it

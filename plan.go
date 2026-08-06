@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
+	"unicode/utf8"
 )
 
 // The plan artifact (§9's first interaction, #15): the object a supervising host
@@ -285,6 +287,55 @@ func (a PlanArtifact) Verify() error {
 	return nil
 }
 
+// commonPrefixLen is the byte index at which two strings first differ, or their shared
+// length if one is a prefix of the other.
+func commonPrefixLen(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
+// quoteAround renders s clipped to a WINDOW AROUND ITS DIVERGENCE FROM other, so two
+// long statements sharing a long prefix show the part that actually differs.
+//
+// Elides with a leading "…" when the window does not start at the beginning, so a reader
+// is never shown a fragment that looks like the whole statement. Clipped on a rune
+// boundary: cutting a multi-byte character mid-way would print a replacement char and
+// make a message about text differences itself unreadable.
+func quoteAround(s, other string) string {
+	const window = 60
+	d := commonPrefixLen(s, other)
+	start := d - window/3
+	if start < 0 {
+		start = 0
+	}
+	for start > 0 && !utf8.RuneStart(s[start]) {
+		start--
+	}
+	end := start + window
+	if end > len(s) {
+		end = len(s)
+	}
+	for end < len(s) && !utf8.RuneStart(s[end]) {
+		end++
+	}
+	out := strconv.Quote(s[start:end])
+	if start > 0 {
+		out = "…" + out
+	}
+	if end < len(s) {
+		out += "…"
+	}
+	return out
+}
+
 // Authorizes reports whether this artifact permits a run of p under caps, floor and
 // depth — the D1/D2 gate (P9, P6).
 //
@@ -304,8 +355,15 @@ func (a PlanArtifact) Verify() error {
 // property D1 exists to protect, arriving from an unexpected direction.
 func (a PlanArtifact) Authorizes(p Problem, caps Caps, floor Units, depth int, plannerModel string) error {
 	if a.Problem.Statement != p.Statement {
-		return fmt.Errorf("%w: the plan was made for a different problem\n  planned %.60q\n  asked   %.60q",
-			ErrPlanNotAuthorized, a.Problem.Statement, p.Statement)
+		// SHOWN FROM WHERE THEY DIVERGE, not from the start. A plain %.60q truncated both
+		// sides to a COMMON PREFIX and printed two identical-looking lines under the words
+		// "a different problem" — which is the one case this error is for. Found by pasting
+		// the command `plan` prints and reading the refusal: the statements differed in a
+		// trailing fragment that neither line reached.
+		return fmt.Errorf("%w: the plan was made for a different problem\n  planned %s\n  asked   %s\n"+
+			"  they first differ at byte %d; the run must restate the statement the plan was made for",
+			ErrPlanNotAuthorized, quoteAround(a.Problem.Statement, p.Statement),
+			quoteAround(p.Statement, a.Problem.Statement), commonPrefixLen(a.Problem.Statement, p.Statement))
 	}
 	// P6, and the SAME DIRECTION Ledger.Child enforces: every tag the plan was
 	// planned under must be present and equal in the run's scope. Dropping a tag is
