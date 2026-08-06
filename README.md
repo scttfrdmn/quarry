@@ -77,6 +77,33 @@ bin/quarry replay <record.json>                 # proves it reproduces (P8)
 against real Bedrock, which costs roughly USD 0.08-0.11 per run (measured, not
 estimated).
 
+## Verifying a release
+
+Releases are signed with [cosign](https://github.com/sigstore/cosign) keyless — no
+long-lived key exists, and the signing identity is this repo's release workflow at
+the tag. A supervising host verifies the binary **before spawning it**.
+
+**Pin the identity.** A `verify-blob` without `--certificate-identity` and
+`--certificate-oidc-issuer` succeeds on any valid Sigstore signature by anyone: it
+proves the file was signed, not that quarry signed it.
+
+```
+cosign verify-blob quarry_v0.1.0_linux_amd64 \
+  --bundle quarry_v0.1.0_linux_amd64.cosign.bundle \
+  --certificate-identity "https://github.com/scttfrdmn/quarry/.github/workflows/release.yml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+```
+
+To accept any release rather than one tag, keep the workflow pin and relax the tag:
+`--certificate-identity-regexp '^https://github\.com/scttfrdmn/quarry/\.github/workflows/release\.yml@refs/tags/v'`.
+
+SLSA build provenance is attested per binary
+(`gh attestation verify <binary> --repo scttfrdmn/quarry`), and `SHA256SUMS` is signed
+too. `quarry --version` reports the release; records from a stamped build name it in
+`RunRecord.Producer`, and an unstamped development build names nothing rather than
+claiming `"dev"`. Details in
+[`docs/integration-requirements.md` §6 D0](docs/integration-requirements.md).
+
 ## Development
 
 ```

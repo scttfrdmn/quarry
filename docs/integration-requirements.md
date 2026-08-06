@@ -588,6 +588,57 @@ out: **agate's protocol has no gap representation**, so the one fact a supervisi
 host most needs (did this answer cover the question, or part of it?) cannot ride on
 any event agate accepts.
 
+### D0 — verify the binary before you spawn it  [#13, P8]
+
+**Where this landed, and a divergence named rather than fixed quietly.**
+[#13](https://github.com/scttfrdmn/quarry/issues/13) asks for this in
+"`docs/host-integration.md`'s capability-manifest section". **Neither exists** — there
+is no `docs/host-integration.md` in this repo and no capability-manifest section
+anywhere in it. Rather than create a second host-facing document beside this one, it
+goes here, which is the section a host author is already reading. If a
+capability-manifest section is ever written, this is the text to move.
+
+Releases are signed with **cosign keyless**: no long-lived private key exists, and the
+signing identity *is* `.github/workflows/release.yml` at the release tag, certified by
+GitHub's OIDC issuer.
+
+**The identity constraints are part of the contract, not decoration.** A
+`cosign verify-blob` without `--certificate-identity` and `--certificate-oidc-issuer`
+succeeds against *any* valid Sigstore signature by *anyone* — it proves a file was
+signed, not that quarry signed it. A host that spawns on the strength of an unpinned
+verify has a gate that always says yes:
+
+```
+cosign verify-blob quarry_v0.1.0_linux_amd64 \
+  --bundle quarry_v0.1.0_linux_amd64.cosign.bundle \
+  --certificate-identity "https://github.com/scttfrdmn/quarry/.github/workflows/release.yml@refs/tags/v0.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+```
+
+To accept any release rather than one tag — the usual case for a host that upgrades —
+keep the workflow pin and relax only the tag:
+
+```
+  --certificate-identity-regexp '^https://github\.com/scttfrdmn/quarry/\.github/workflows/release\.yml@refs/tags/v'
+```
+
+Every binary and `SHA256SUMS` ships a `.cosign.bundle` beside it (signature,
+certificate and inclusion proof in one file, verifiable offline). SLSA build provenance
+is attested per binary: `gh attestation verify <binary> --repo scttfrdmn/quarry`.
+
+**The workflow verifies its own published one-liner**, in a job that neither built nor
+signed the assets and that downloads them from the release — and it asserts that a
+*foreign* identity is **refused**, because a constraint that accepts everything is
+indistinguishable from no constraint if you only ever test the success path.
+
+**Which build wrote a record is on the record, not on the wire.** `RunRecord.Producer`
+carries `"quarry-go/v0.1.0 (abc1234)"`; `StreamEvent.Producer` stays `"quarry-go"` and
+is **not** getting a version — D2 froze the frame, and appending to it would make every
+release a wire change for bucktooth and rustynail in order to carry a fact the citable
+artifact already carries. **An unstamped development build sets no `Producer` at all**
+rather than `"dev"`: absence is not zero, and the field is `omitempty` so every record
+written before it existed still hashes to its own `RunID` (P8).
+
 ### D1 — the events own stdout; humans move to stderr
 
 `--events-json` makes NDJSON **the only thing on stdout**. The live tree and the

@@ -497,6 +497,34 @@ type RunRecord struct {
 	// value makes an ungated record byte-identical to what it was, so P8 survives the
 	// addition.
 	PlanID string `json:"PlanID,omitempty"`
+
+	// Producer names the build that wrote this record — "quarry-go/v0.1.0 (abc1234)"
+	// (#13, P8).
+	//
+	// FIFTH INSTANCE OF THE DEFECT Bounds and PlanID record, and the most obviously
+	// irrecoverable of them: which binary produced a record is not a property of the tree
+	// AT ALL. Two runs whose geometry is identical may come from builds that disagree
+	// about the planner prompt, the price sheet or the canonical encoding, and a record
+	// read months later has no way to ask. "The record outlives the model" (P8) is a claim
+	// about the record's self-sufficiency, and a record that cannot name what wrote it
+	// leaves every future reader inferring it from a filename.
+	//
+	// WHY THIS MATTERS FOR REPLAY RATHER THAN JUST FOR AUDIT. A divergence between a
+	// record and its replay has two candidate causes — a real regression, or a change in
+	// this repo between the two builds — and they call for opposite responses. Without
+	// this field the second cause is invisible and gets misattributed to the first.
+	//
+	// INSIDE THE RUNID, like PlanID: a build is part of what produced the record, so two
+	// records that differ only in producer are different records. And UNSET ON A
+	// DEVELOPMENT BUILD rather than defaulted to "dev": absence is not zero, and a record
+	// stamped "dev" would assert a fact about provenance that nothing verified. Only a
+	// release build stamps it, which is what makes a present value trustworthy.
+	//
+	// omitempty IS LOAD-BEARING for the same reason it is on PlanID — canonical() encodes
+	// every field, so an unconditional one would add `"Producer":""` to every record's
+	// canonical bytes and every record written before this field existed would stop
+	// hashing to its own RunID. testdata/record-pre-planid.json is the captured witness.
+	Producer string `json:"Producer,omitempty"`
 }
 
 // RunBounds are the executor settings a replay must reproduce to re-execute the same
