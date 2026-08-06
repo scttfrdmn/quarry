@@ -1875,3 +1875,25 @@ The pattern worth naming: every correction above came from *running or reading t
 from re-reading this document. The sections still marked weak are precisely the ones that have not
 yet met a real corpus — and, as the table above records, "running the real thing" now demonstrably
 means the *live* thing at least once, not only the fake.
+
+**The approval gate was verified live, and the live run added two things `--fake` structurally could
+not.** One live plan plus one gated run at `--cap 0.25 --depth 2` (artifact `889e3f108f36`, record
+`1dc68ab8d4bd`, 26 nodes, $0.0669): all five approved children ran verbatim in order, the record
+carried the artifact's `PlanID`, and `quarry replay` reproduced it byte-identically with no
+credentials. Every refusal — cap, widened scope, depth, tampered artifact — refused before reaching a
+provider, so each cost nothing, which is the property that makes a gate a gate.
+
+The two additions are both consequences of the uniform-cost gap above:
+
+- **The exclusions path.** The live planner proposed nine sub-questions and the cap covered five, so
+  the artifact carried four *excluded* ones and the record's summary reported them as planned
+  degradation rather than gaps (§3.1). `--fake` declines or funds everything, so it never produces a
+  partial split at all — the single most important thing a host is being asked to approve.
+- **A measured planner call, which sizes issue #26.** `--plan-cap` is the first mechanism that ever
+  priced one: **$0.0033**. Against the same run's six internal nodes that is ~$0.0198 unrecorded
+  against a $0.0669 recorded total — the receipt under-reports by roughly **30%**. The mechanism was
+  known and documented; the magnitude was not, and it is the magnitude that makes it a defect rather
+  than a rounding note. It is invisible on `--fake` for a reason worth stating, because it is a second
+  face of the same asymmetry: a live planner's prompt carries the balance, the depth, the prior
+  outcomes and the shape rules, making it one of the *largest* prompts in the system, while a fake
+  planner's call prices out near a leaf's. The ratio only exists live.
