@@ -29,7 +29,7 @@ func runCmd(ctx context.Context, args []string) error {
 		capS      = fs.String("cap", "1.00", "spend cap (the contract, P4); required unless --deadline is set")
 		capMicros = fs.Int64("cap-micros", 0,
 			"spend cap in integer micro-units — the host path, no float at the boundary (#11 D1)")
-		floorS   = fs.String("floor", "0.0002", "smallest allocation worth giving a child (§3)")
+		floorS   = fs.String("floor", defaultFloorS, "smallest allocation worth giving a child (§3)")
 		deadline = fs.Duration("deadline", 0, "latency cap; a run may be bound by time instead of money (§3.1)")
 		due      = fs.String("due", "",
 			"absolute RFC3339 deadline; the host owns the clock (#11 D2). a due date with no --deadline is deferrable (§3.1)")
@@ -46,6 +46,10 @@ func runCmd(ctx context.Context, args []string) error {
 			"emit the framed RunEvent stream as NDJSON on stdout; human output moves to stderr (#9)")
 		liveEvents = fs.Bool("live-events", false,
 			"with --events-json, also emit per-node enter/exit events AS THEY HAPPEN (#14)")
+		planFile = fs.String("plan", "",
+			"execute an APPROVED plan artifact from `quarry plan` (#15). refuses a cap, scope, "+
+				"floor or depth other than the one it was planned under — planning is "+
+				"budget-conditioned (P9), so the same split under a different cap is a different plan")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: quarry run [flags] \"<problem statement>\"\n\n")
@@ -127,6 +131,39 @@ func runCmd(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The approval gate's second phase (#15). AFTER wireSeams, because the approved
+	// planner WRAPS the run's own: the artifact governs the root and the wired planner
+	// plans below it, inside allocations the gate approved.
+	//
+	// BEFORE ANYTHING IS SPENT, and before the observers are attached: every refusal here
+	// is a design refusal about authority, so a run that will not be authorised must not
+	// have drawn a tree or emitted a frame first.
+	var artifact *quarry.PlanArtifact
+	if *planFile != "" {
+		art, aerr := readPlanArtifact(*planFile)
+		if aerr != nil {
+			return aerr
+		}
+		plannerModel := *model
+		if *fake {
+			plannerModel = quarry.FakePlannerModel
+		}
+		// D1 and D2, in one call: the cap, the scope, the floor, the depth and the model
+		// mode. A usage error rather than a fault — nothing ran, and the caller can fix it
+		// by matching the flags or re-planning.
+		if aerr := art.Authorizes(quarry.Problem{Statement: statement, Scope: scope}, caps, floor, cfg.Depth, plannerModel); aerr != nil {
+			return usageErrf("%w", aerr)
+		}
+		// The approved apportionment, re-derived through THIS ledger and checked against
+		// the artifact's (plan.go Apportion). Re-derived rather than injected, so the money
+		// still flows through Reserve; the stored numbers are the assertion.
+		if _, aerr := art.Apportion(l); aerr != nil {
+			return explain(aerr)
+		}
+		e.Planner = art.Planner(e.Planner)
+		artifact = &art
+	}
+
 	// D1: --events-json gives the EVENTS stdout and moves every human byte to stderr.
 	// The standard Unix contract — one machine-readable stream on fd 1 — rather than
 	// events on fd 3, which is harder to consume from every host language for no gain.
@@ -200,6 +237,13 @@ func runCmd(ctx context.Context, args []string) error {
 	}
 
 	rec := quarry.NewRunRecord(res, quarry.Problem{Statement: statement, Scope: scope}, caps, quarry.ModeFresh)
+	if artifact != nil {
+		// D3: the record NAMES THE PLAN IT WAS AUTHORISED TO RUN, and the RunID is re-derived
+		// so the approval sits inside the run's identity. A record that cannot name its
+		// authorisation leaves the approval unverifiable afterwards, which is the whole value
+		// of having gated.
+		rec = rec.WithPlan(artifact.PlanID)
+	}
 	path := *out
 	if path == "" {
 		path = fmt.Sprintf("quarry-run-%s.json", rec.RunID[:12])

@@ -67,6 +67,7 @@ func NewRunRecord(res Result, root Problem, caps Caps, mode Mode) RunRecord {
 //	inherited   Problem, Caps, Mode   the replay is ABOUT this run, not its own
 //	            BoundBy               which cap bit is a fact of the original execution
 //	            Adversarial           no seam replays the adversary (see below)
+//	            PlanID                the approval is the original's, not the replay's
 //	re-derived  Outcomes, Unverified  the tree IS what replay re-executes
 //	            RunID                 must be recomputed, or this proves nothing
 //
@@ -95,7 +96,33 @@ func ReplayRecord(res Result, orig RunRecord) RunRecord {
 		// by construction and prove nothing. They are a fact of the original execution in
 		// exactly the sense BoundBy is.
 		Bounds: orig.Bounds,
+		// INHERITED (#15 D3). A replay re-executes a recorded tree off RecordedProvider;
+		// it does not re-approve anything, and it has no artifact in hand. Re-deriving
+		// this would mean either dropping it — making a replay of a gated run look
+		// ungated, which is the fact the field exists to preserve — or asserting an
+		// approval the replay never saw. The approval belongs to the original execution.
+		PlanID: orig.PlanID,
 	}
+	r.RunID = contentHash(r)
+	return r
+}
+
+// WithPlan names the approved plan artifact this run was authorised to execute, and
+// RE-DERIVES THE RUNID so the approval is inside the run's identity (#15 D3).
+//
+// A METHOD RATHER THAN A NewRunRecord PARAMETER, for the reason Iteration.Record is
+// also a second assembly path: NewRunRecord has some thirty call sites and a gated run
+// is the exception, so a fifth parameter would make every caller state that it is not
+// using the gate. The shape is Iteration.Record's exactly — set the field, then hash —
+// "so the predecessor's identity is inside the successor's identity".
+//
+// THE RE-HASH IS THE POINT, not an implementation detail. PlanID is a hashed field, so
+// setting it without recomputing would leave a record that does not hash to its own
+// RunID: readRecord would warn that the citable artifact had been edited, and the
+// approval would arrive attached to a record nothing would cite. The re-hash lives here
+// rather than at the CLI so no caller has to remember it.
+func (r RunRecord) WithPlan(planID string) RunRecord {
+	r.PlanID = planID
 	r.RunID = contentHash(r)
 	return r
 }

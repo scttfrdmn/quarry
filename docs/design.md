@@ -169,6 +169,86 @@ solve plus one verification, that the reserve is intact, and that declared leave
 allocated recursion budget. Per P3 the planner is the node most worth verifying and previously had
 only adversarial checking available; budget-conditioning makes part of it checkable for free.
 
+### A plan can be approved before it is executed, and the approval is an artifact
+
+P9's last consequence says degradation is "reviewable at the plan gate (§9)". For a long time
+that gate was informational: the TUI *displayed* the split, the apportionment and the exclusions
+before fanout, and then fanned out regardless. Reviewing something you cannot refuse is not a gate.
+
+The gate is now two commands. `quarry plan` produces a **plan artifact** — a pinned, content-hashed
+file describing one proposed decomposition — and `quarry run --plan <file>` executes that artifact
+and nothing else. Between them, a host or a person decides.
+
+**A plan is valid only for the budget it was planned under.** This is the integrity property the
+whole gate rests on, and it is P9 read backwards: if caps are inputs to planning, then a plan
+approved under one cap is not a plan under another. The same split under half the money is a
+different plan, and one the planner might have refused. So the artifact carries the cap it was
+planned against, and the second phase **refuses a mismatch** rather than silently re-apportioning.
+It refuses on the floor and the depth bound for the same reason, and on a fake-planned artifact
+offered to a live run — a synthetic split must not be able to authorise real spend.
+
+**Scope may not widen between the phases** (P6). Descent is not the only place authority can
+broaden; a gap between deciding and doing is another, and it is the one where the widening would be
+a host's doing rather than a planner's.
+
+**The artifact is identified by a content hash, and the record says which plan it executed.** A run
+record that cannot name the plan it was authorised to run leaves the approval unverifiable after the
+fact — the receipt would show the money and not the permission. So `PlanID` is a recorded field, and
+because it is hashed it is inside the run's own identity: a gated run cannot be re-described as
+ungated without changing its `RunID`.
+
+**An edited artifact is refused, not warned about.** This is the one place the record's convention is
+deliberately inverted. A record that fails its hash still gets shown with a warning, because it is
+history and history is worth reading even when it is suspect. An artifact is not history — it is an
+*authorization* — and honouring an edited one would spend money on a split nobody approved while
+recording an approval nobody gave. For the same reason, editing a plan before approving it is not
+supported: a host-edited plan is one the planner never proposed and may have declined.
+
+**Only the root is approved.** What a host approves is the split of the whole problem and the
+division of the money across it; each child then plans within an allocation that *was* approved, so
+a child re-planning is not spending authority nobody granted. Approving every node would make the
+gate a debugger.
+
+**The second phase restates the problem rather than reading it out of the artifact.** `run --plan`
+requires the statement on the command line even though the file already carries it, and the
+apparent redundancy is the check: the artifact *confirms* what the caller asked for. A file that
+supplied both the question and its own authorisation could not detect a host that pointed at the
+wrong plan, which is the likeliest mistake in a directory of them.
+
+Two consequences of that, both of which shipped broken and are recorded because they are the kind
+of defect a passing test suite does not see:
+
+- **The command the gate prints must be runnable as printed.** `quarry plan` ends by telling the
+  operator how to execute what it just wrote, and every value `Authorizes` compares — cap, depth,
+  floor, scope, statement — has to appear in that line, single-quoted, with the statement last so a
+  caller's own flags land where Go's `flag` package still reads them. This is one of the few places
+  where prose output *is* an interface, and it was wrong: the statement was omitted entirely, so the
+  copy-pasteable line exited 2 with usage text. Invisible to the suite because every test built its
+  own argv.
+- **A refusal must show where two statements differ, not their first sixty characters.** Truncating
+  both sides to a common prefix prints two identical-looking lines under the words "a different
+  problem" — precisely the case the error exists to explain. The window is centred on the divergence
+  and clipped on a rune boundary.
+
+**Declining is a first-class outcome.** A planner that refuses to split (P1) produces a valid,
+approvable artifact that runs as a single node — not an error and not an empty file. That case is
+the routine one under `--fake`, whose planner declines on clause length, and a gate that treated it
+as a failure would make P1 unreachable through the gate.
+
+**The approved fanout must be the executed fanout,** which is less obvious than it sounds. Identical
+children collapse before apportionment (the DAG rule, below), so an artifact listing its children
+verbatim describes a wider tree than the run will have and divides the money differently. Both the
+producer and the authorization check therefore collapse first, using the executor's own function.
+Getting this wrong is silent in the worst way: both sides of the comparison are wrong in the same
+direction, so the check passes and the run executes a tree nobody approved.
+
+**Planning costs money, and the artifact says how much.** "Near-zero spend" must be a stated number
+with its own cap rather than a hope — one planner call is real, and the §4 variance diagnostic is
+*k* of them. So the planning phase runs under its own small ceiling, separate from the run's cap.
+Debiting it from the run's cap would be the natural-looking choice and it is wrong: it would shrink
+the budget the plan was made under, violating the validity property above with the mechanism meant
+to satisfy this one.
+
 ### How a leaf is told about its budget
 
 P9 is about *planning*, and for a while that is where it was implemented: the planner received
@@ -509,6 +589,15 @@ the uncertainty of the other half.
 ### Report
 
 Three numbers, never one: **P50, P90, and the structural ceiling.**
+
+And the estimate stays advisory *even at the approval gate* (§2), which is where the temptation to
+promote it is strongest. A plan artifact is the one place a host is looking at a projected cost while
+deciding whether to spend, so it would be natural to refuse a plan whose P90 exceeds the cap — a
+constraint derived from an estimator §13 calls weak, and P4 forbids it. What the artifact carries is
+three numbers plus a sentence naming which of them is trustworthy in this regime: at or above a
+branching factor of 1 the projection diverges and only the ceiling means anything. Nothing gates on
+any of them. **The cap does the refusing**, mechanically, on the apportionment — which needs no
+estimator at all.
 
 ### Plan-variance diagnostic
 
@@ -855,6 +944,15 @@ to whoever compares the two runs.
 What pinning still does **not** control is the solver — children are re-solved live, which is the
 entire point. `ExpectLeaf` and `Rationale` are also unpinned, deliberately: neither reaches
 `Apportion` or the tree shape, so neither can change what the re-run does.
+
+**Pinning is not the approval gate, and cannot become it.** The two look alike from a distance — both
+replay a decomposition somebody else chose — and the difference is the direction they face in time. A
+pinned planner is built *from a finished run record*: it reads each child's weight off the child the
+weight funded, which only exists because the money was already spent. The gate (§2) has to answer
+*before* anything is spent, from a plan and a balance, with no outcomes to read. So the artifact
+carries its own weights and its own apportionment, and the two mechanisms stay separate: pinning is
+an experimental control over spread, the gate is an authorization over spend. Collapsing them would
+mean either a control that needs prior authorization or a gate that needs a prior run.
 
 ### Claim-level equivalence — no longer unbuilt, and what building it exposed
 
@@ -1242,6 +1340,11 @@ own command line.
   cost, claims, gaps. Not live, but it is the "makes the system debuggable rather than a slot
   machine" requirement, and it works on any record on disk, including one someone emailed you.
 - `quarry replay` proves the record reproduces (P8) — which no external viewer would have offered.
+- `quarry plan` is the first half of the approval gate (§2): it produces the pinned artifact a host
+  or a person approves, and `quarry run --plan` executes it. It is a *fourth* verb rather than a flag
+  on `run` because the two phases have different exit conditions — planning that ends in a decline is
+  a success, and a run refused for lack of authority is a usage error — and because a phase whose
+  entire purpose is to stop before spending should not share an entry point with the one that spends.
 - `--fake` runs the whole thing with no credentials, no network and no money, so the surface is
   demonstrable before any of the three integrations exist.
 
@@ -1718,19 +1821,26 @@ noticing it was an instance of a pattern, not that it was listed.
 - **A streaming *export*.** The OTel span tree and the `RunEvent` stream are still post-hoc folds of a
   finished record, for the reason §9 gives: live span parentage would require the core to import an
   OTel SDK. Genuinely blocked on a design decision, not a missing capability.
-- **Human-in-loop at the plan gate** (§9's first interaction). The TUI *displays* the plan, its
-  apportionment and its exclusions before fanout, which is the information half. Gating on approval is
-  not built: it needs a decision about what a declined plan does to a run record, which is a question
-  about the artifact rather than about the interface.
+- **Mid-run human-in-loop.** Approving *before* the run is built (§2, `quarry plan` / `run --plan`);
+  interrupting a run in flight to approve or amend a sub-plan is not, and is a different problem — it
+  needs input handling and a way to pause a subtree without cancelling it.
 - **Mid-run top-up and per-branch kill** (§9's second interaction). The mechanism exists —
   `context.CancelFunc` per branch (§10) — and the display exists; the input handling does not.
 
-Three items previously listed here — per-node timing, per-node token counts, and **the live tree
-view** — **were built**; see the settled questions in §12 and the correction in §9. They are called
-out because they show the failure mode this section exists to catch: each was described as blocked
-when none was, and the actual obstacle in every case was an unmade decision, not a missing
-capability. The tree view is the sharpest instance, because its blocker was stated as "a viewer that
-exists" while the answer was to write one.
+Four items previously listed here — per-node timing, per-node token counts, **the live tree view**,
+and **human-in-loop at the plan gate** — **were built**; see the settled questions in §12 and the
+corrections in §2 and §9. They are called out because they show the failure mode this section exists
+to catch: each was described as blocked when none was, and the actual obstacle in every case was an
+unmade decision, not a missing capability. The tree view is the sharpest instance, because its
+blocker was stated as "a viewer that exists" while the answer was to write one.
+
+The plan gate is the sharpest instance of the *other* half, because its blocker was stated accurately
+and was still not a blocker. The entry read: "it needs a decision about what a declined plan does to a
+run record, which is a question about the artifact rather than about the interface." That was true —
+and the answer, once someone made it, was one sentence long: a declined plan is a valid artifact that
+runs as a single node (§2). **An unmade decision described precisely enough to sound like a
+dependency is the form this failure takes when it is hardest to see**, because the sentence is
+correct, informative, and still an excuse.
 
 **The fake provider is not a small live provider, and three defects hid in the difference.** The
 first run against real Bedrock — a 28-node tree under a $0.25 cap — produced three divergences in
@@ -1786,3 +1896,25 @@ The pattern worth naming: every correction above came from *running or reading t
 from re-reading this document. The sections still marked weak are precisely the ones that have not
 yet met a real corpus — and, as the table above records, "running the real thing" now demonstrably
 means the *live* thing at least once, not only the fake.
+
+**The approval gate was verified live, and the live run added two things `--fake` structurally could
+not.** One live plan plus one gated run at `--cap 0.25 --depth 2` (artifact `889e3f108f36`, record
+`1dc68ab8d4bd`, 26 nodes, $0.0669): all five approved children ran verbatim in order, the record
+carried the artifact's `PlanID`, and `quarry replay` reproduced it byte-identically with no
+credentials. Every refusal — cap, widened scope, depth, tampered artifact — refused before reaching a
+provider, so each cost nothing, which is the property that makes a gate a gate.
+
+The two additions are both consequences of the uniform-cost gap above:
+
+- **The exclusions path.** The live planner proposed nine sub-questions and the cap covered five, so
+  the artifact carried four *excluded* ones and the record's summary reported them as planned
+  degradation rather than gaps (§3.1). `--fake` declines or funds everything, so it never produces a
+  partial split at all — the single most important thing a host is being asked to approve.
+- **A measured planner call, which sizes issue #26.** `--plan-cap` is the first mechanism that ever
+  priced one: **$0.0033**. Against the same run's six internal nodes that is ~$0.0198 unrecorded
+  against a $0.0669 recorded total — the receipt under-reports by roughly **30%**. The mechanism was
+  known and documented; the magnitude was not, and it is the magnitude that makes it a defect rather
+  than a rounding note. It is invisible on `--fake` for a reason worth stating, because it is a second
+  face of the same asymmetry: a live planner's prompt carries the balance, the depth, the prior
+  outcomes and the shape rules, making it one of the *largest* prompts in the system, while a fake
+  planner's call prices out near a leaf's. The ratio only exists live.
