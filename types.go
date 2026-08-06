@@ -475,6 +475,28 @@ type RunRecord struct {
 	// environment anything — and a knob that changes which base case a node takes is
 	// exactly what that promise covers.
 	Bounds RunBounds
+
+	// PlanID names the approved plan artifact this run was authorised to execute
+	// (#15 D3), empty for a run that was not gated.
+	//
+	// FOURTH INSTANCE OF THE SAME DEFECT Bounds records above. "Which plan was
+	// approved" is a fact of the original execution and cannot be re-derived from the
+	// tree's geometry: the shape a record shows is one the planner might have produced
+	// unprompted, so a record that cannot name its authorisation leaves the approval
+	// unverifiable after the fact — which is the whole value of gating.
+	//
+	// INSIDE THE RUNID, like Iteration.Record's ParentRun, so the approved plan's
+	// identity is part of the run's identity. Two runs of the same tree under the same
+	// caps, one gated and one not, are therefore different records.
+	//
+	// THE ONE json TAG IN THIS FILE THAT IS NOT `json:"-"`, and omitempty is
+	// load-bearing rather than tidy. canonical() encodes every field, so an
+	// unconditional field would add `"PlanID":""` to every record's canonical bytes
+	// and every record written before this field existed would stop hashing to its own
+	// RunID (testdata/record-pre-planid.json is the captured case). Omitting the zero
+	// value makes an ungated record byte-identical to what it was, so P8 survives the
+	// addition.
+	PlanID string `json:"PlanID,omitempty"`
 }
 
 // RunBounds are the executor settings a replay must reproduce to re-execute the same

@@ -45,7 +45,16 @@ var ErrUnparseablePlan = fmt.Errorf("planner reply is not a parseable plan")
 // plan that does not. What the planner may NOT do is see the budget and quote a
 // price; it returns weights and the Ledger does the arithmetic.
 type BedrockPlanner struct {
-	Provider *BedrockProvider
+	// Provider is the SEAM, not *BedrockProvider, and the widening is what makes the
+	// planner call meterable (#15 D4).
+	//
+	// A concrete field here meant nothing could sit between the planner and the model,
+	// so "quarry plan costs money, and says how much" was unanswerable from outside:
+	// the cost is on the Sample this file discards, and no caller could observe it.
+	// With the seam, Meter wraps the provider and both meters and caps the planning
+	// phase. Nothing else about this planner changes — it only ever called Complete —
+	// and NewBedrockPlanner still takes the concrete type, which satisfies it.
+	Provider quarry.Provider
 	Model    string
 
 	// MaxItems bounds the fanout the planner may propose. Zero means DefaultMaxItems.

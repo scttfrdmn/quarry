@@ -6,11 +6,19 @@
 // credentials and real money. The cheapest way to understand the system was also the
 // most expensive thing available.
 //
-// Three verbs, matching the two halves of §9:
+// Four verbs, matching §9's two halves plus its approval gate:
 //
 //	quarry run     execute a problem under a cap, drawing the live tree
+//	quarry plan    propose a decomposition and STOP, for approval before spend (#15)
 //	quarry show    read a saved record — the inspect half
 //	quarry replay  re-execute a record and prove it reproduces byte-for-byte (P8)
+//
+// `plan` IS THE PRE-SPEND HALF and it is not a dry run of `run`. §9 asks for
+// "human-in-loop at the plan, before fanout", and what it gates on is an artifact: a
+// content-hashed object carrying the split, the apportionment, and THE CAP IT WAS
+// PLANNED AGAINST. `run --plan <file>` executes exactly that artifact and refuses a
+// different cap or a wider scope, because under P9 planning is budget-conditioned — the
+// same split under half the money is a plan the planner might have declined.
 //
 // --fake needs no credentials, spends no money and calls no model. It demonstrates
 // SHAPE, COST and PROVENANCE, which is what quarry is about, and demonstrates
@@ -90,6 +98,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		err = runCmd(ctx, os.Args[2:])
+	case "plan":
+		err = planCmd(ctx, os.Args[2:])
 	case "show":
 		err = showCmd(os.Args[2:])
 	case "replay":
@@ -189,16 +199,24 @@ func usage() {
 
 usage:
   quarry run [flags] "<problem statement>"
+  quarry plan [flags] "<problem statement>"
   quarry show [flags] <record.json>
   quarry replay [flags] <record.json>
 
   run     execute a problem under a cap, drawing the live tree (§9)
+  plan    propose a decomposition and stop, for approval BEFORE spend (§9, #15)
   show    read a saved record: cost receipt, trust summary, what was NOT checked
   replay  re-execute a record against its own responses; must reproduce exactly (P8)
 
 Run "quarry <command> -h" for flags.
 
   quarry run --fake --cap 1.00 "What does X cost, how does it scale, and what dominates?"
+
+the approval gate, in two phases — the plan is valid ONLY for the cap it was
+planned against, because planning is budget-conditioned (P9):
+
+  quarry plan --fake --cap 1.00 "<question>"      writes quarry-plan-<hash>.json
+  quarry run --plan quarry-plan-<hash>.json --fake --cap 1.00
 
 --fake needs no credentials and spends nothing. It demonstrates shape, cost and
 provenance; the answers are synthetic and mean nothing.

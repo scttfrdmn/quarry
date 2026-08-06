@@ -291,15 +291,13 @@ func (e *Executor) node(ctx context.Context, p Problem, l *Ledger, id string, de
 		}
 	}
 
-	// Base cases that need no planner call (§2).
-	if depth >= e.maxDepth() {
-		st, ferr := e.leaf(ctx, p, l, id, depth, BaseMaxDepth, from)
-		return st, Plan{}, ferr
-	}
-	if ap := l.Apportionable(); ap.Limited() && ap < e.Floor {
-		// Cannot fund even one child above floor plus the reduce — splitting is
-		// pointless, so solve directly (base case 3).
-		st, ferr := e.leaf(ctx, p, l, id, depth, BaseBelowFloor, from)
+	// Base cases that need no planner call (§2) — the depth bound and the floor.
+	//
+	// SHARED WITH THE PLAN GATE via PrePlanBase (plan.go, #15), so `quarry plan`
+	// cannot emit an artifact promising a split that this executor would never
+	// perform. Two copies of this ordering would be two things to keep in agreement.
+	if base, done := PrePlanBase(l, e.Floor, depth, e.maxDepth()); done {
+		st, ferr := e.leaf(ctx, p, l, id, depth, base, from)
 		return st, Plan{}, ferr
 	}
 	// P2, the PRIMARY terminator: recurse only as deep as you have verifiers.
@@ -723,6 +721,15 @@ func dedupePlan(p Plan) Plan {
 	}
 	return out
 }
+
+// DedupePlan is dedupePlan, exported for the plan gate (#15).
+//
+// THE GATE MUST COLLAPSE WHAT THE RUN WILL COLLAPSE, or the artifact promises a fanout
+// the executor does not perform: an approved plan showing five children that dedupes to
+// three at run time would apportion differently, and D1's apportionment check would
+// refuse the run over a difference the gate itself introduced. Same function, so the two
+// cannot disagree.
+func DedupePlan(p Plan) Plan { return dedupePlan(p) }
 
 // boundBy names the cap that bit during THIS RUN, which is not the same question
 // BoundBy(ctx, l) answers.

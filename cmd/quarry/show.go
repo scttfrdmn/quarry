@@ -110,6 +110,13 @@ func showRecord(w *printer, rec quarry.RunRecord, width int) {
 		w.printf("  (from %s)", rec.ParentRun[:12])
 	}
 	w.println()
+	// The approval, if this run was gated (#15 D3). Printed in the header block rather
+	// than as a footnote, because "which plan was approved" is a property of the run's
+	// authority — the same standing as its cap — and it cannot be re-derived from the
+	// tree below: the shape shown here is one the planner might have produced unprompted.
+	if rec.PlanID != "" {
+		w.printf("plan      %s  (this run executed an APPROVED plan — #15)\n", rec.PlanID[:12])
+	}
 	w.printf("cost      %s of %s\n", rec.TotalCost(), rec.Caps.Spend)
 	if cpc, ok := rec.CostPerVerifiedClaim(); ok {
 		w.printf("          %s per verified claim\n", cpc)
@@ -733,6 +740,12 @@ func diffRecords(a, b quarry.RunRecord) string {
 	if len(a.Unverified) != len(b.Unverified) {
 		out = append(out, fmt.Sprintf("  unverified: %d recorded, %d replayed — the list of what was "+
 			"NOT checked is part of the deliverable (§8)", len(a.Unverified), len(b.Unverified)))
+	}
+	if a.PlanID != b.PlanID {
+		out = append(out, fmt.Sprintf("  plan: %q recorded, %q replayed — the approved plan (#15 D3) is "+
+			"inherited, not re-derived, so a difference means ReplayRecord was bypassed. An empty "+
+			"replayed value would make a GATED run replay as an ungated one",
+			a.PlanID, b.PlanID))
 	}
 	if len(out) == 0 {
 		return "  the canonical bytes differ but no field-level difference was found —\n" +

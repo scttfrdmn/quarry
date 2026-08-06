@@ -40,6 +40,16 @@ func Probe(ctx context.Context, planner Planner, p Problem, alloc Allocation) (m
 	return m, v, plan, nil
 }
 
+// PlanMoments reads a plan's offspring moments without making a call — Probe's second
+// half, separated for the plan gate (#15 D5).
+//
+// THE GATE ALREADY HOLDS A PLAN. Probe couples the call and the arithmetic, which is
+// right for §4's "pay ~1/N up front" framing, but `quarry plan` has paid for its plan
+// already and calling Probe would buy a SECOND one — spending twice for a projection
+// that is advisory either way (P4), and projecting a plan other than the one being
+// approved.
+func PlanMoments(plan Plan) (mean, variance float64) { return offspringMoments(plan) }
+
 // offspringMoments reads the mean and variance of the offspring count off a
 // single plan. Each recursing child (not ExpectLeaf) is one unit of offspring; a
 // leaf child is zero. The plan's total offspring is the count of recursing
