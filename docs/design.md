@@ -859,6 +859,41 @@ nothing.
 The inference survives for records written before the field existed. Both branches stay exercised,
 which is the honest state: one reads a stated fact, the other admits a guess.
 
+#### The fifth instance, and the only one nothing in the record could have hinted at
+
+`PlanID` was the fourth. The fifth is **which build ran it**, and it is the cleanest case the rule
+has, because the other four were at least *arguably* recoverable — a `max_depth` leaf names the
+bound, a `below_floor` node hints at the floor — whereas nothing anywhere in a tree's geometry
+narrows down the binary that produced it. A replay reads the record and reconstructs an executor; it
+cannot reconstruct a compiler, a dependency graph or six months of changes to the reducer.
+
+Why it matters for replay specifically, rather than as bookkeeping. **A divergence has two candidate
+causes: a real regression, or a legitimate change between two builds.** Without the producer on the
+record the second cause is invisible, so every divergence gets attributed to the first, and the P8
+claim degrades from "this record reproduces" to "this record reproduces under a binary nobody
+recorded". `RunRecord.Producer` therefore carries `"quarry-go/v0.1.0 (abc1234)"` — implementation,
+version and commit — and a replay **inherits** it rather than stamping the replaying binary's, for
+exactly `BoundBy`'s reason: it is a fact of the original execution. Stamping the replayer's would
+make a v0.2 binary report a divergence against a v0.1 record on a field the replay never observed.
+
+Two consequences follow from the field being *hashed*, and both are the discipline this section keeps
+restating rather than new rules:
+
+- **An unstamped development build asserts nothing.** Not `"dev"`, not `"unknown"` — absence is not
+  zero, and a defaulted string is a provenance claim no release process backed. A commit alone is not
+  enough either: it names source, not a release, so it cannot answer whether the artifact was
+  published or signed, which is the question the field exists for.
+- **`omitempty` is load-bearing.** An unconditional field adds `"Producer":""` to every record's
+  canonical bytes, and every record written before it existed stops hashing to its own `RunID`
+  (`testdata/record-pre-planid.json` is the captured witness for both this and `PlanID`). New fields
+  go at the *end* of the struct for the same reason: canonical encoding is in declaration order, so
+  field order is part of the identity.
+
+The signing story stops at the binary, deliberately. Releases are cosign-keyless signed with an
+identity-constrained verify one-liner published for hosts (`docs/integration-requirements.md` §6 D0);
+**records themselves are not signed**, because the `RunID` is already a content hash and record
+signing is a different question about a different threat.
+
 #### The same defect wearing the other cap: unfunded is not gapped
 
 **Found by the first live Bedrock run**, which is the point of the entry below. A 28-node run under a

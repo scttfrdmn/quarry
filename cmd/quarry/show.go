@@ -747,11 +747,86 @@ func diffRecords(a, b quarry.RunRecord) string {
 			"replayed value would make a GATED run replay as an ungated one",
 			a.PlanID, b.PlanID))
 	}
+	if a.Producer != b.Producer {
+		out = append(out, fmt.Sprintf("  producer: %q recorded, %q replayed — the build that RAN it is "+
+			"inherited, not re-derived (#13, P8), so a difference means ReplayRecord was bypassed and "+
+			"the replaying binary stamped itself. That would report a divergence on the one field a "+
+			"replay never observes", a.Producer, b.Producer))
+	}
+	// THE REMAINING RECORD-LEVEL FIELDS, ADDED AFTER THE FOURTH FALL-THROUGH. Producer above
+	// was found by reintroducing the re-derivation defect behind the BINARY's back: the hashes
+	// differed, no field-level difference was reported, and the fallback blamed the encoder —
+	// exactly what the comment at the head of this block predicts, for the fourth time.
+	//
+	// So this closes the hole rather than only the instance. The comment above said "a record
+	// whose nodes all agree can still diverge in its own fields", and then checked six of
+	// fifteen. Every field canonical() hashes is now named somewhere in this function, which is
+	// the only version of this check that stops the pattern recurring on the next field added.
+	//
+	// COARSER THAN THE CHECKS ABOVE, deliberately. These are inherited wholesale by
+	// ReplayRecord, so any difference has one cause — the inheritance was bypassed — and
+	// pointing at that is more useful than rendering a Caps struct. A finding that names the
+	// wrong file is the failure mode here; a finding that names the right file coarsely is not.
+	// Statement and tags SEPARATELY because Scope holds a map, so Problem is not comparable
+	// with == at all — the compiler catches that, unlike the omission this whole block fixes.
+	if a.Problem.Statement != b.Problem.Statement || !sameTags(a.Problem.Scope, b.Problem.Scope) {
+		out = append(out, fmt.Sprintf("  problem: %.60q / scope %v recorded, %.60q / %v replayed — a "+
+			"replay must restate the problem it was given (P6: scope never widens)",
+			a.Problem.Statement, a.Problem.Scope.Tags, b.Problem.Statement, b.Problem.Scope.Tags))
+	}
+	if a.Caps != b.Caps {
+		out = append(out, fmt.Sprintf("  caps: spend %s / latency %s recorded, %s / %s replayed — the cap "+
+			"is the contract (P4) and is inherited, not re-derived",
+			a.Caps.Spend, a.Caps.Latency, b.Caps.Spend, b.Caps.Latency))
+	}
+	if a.Bounds != b.Bounds {
+		out = append(out, fmt.Sprintf("  bounds: depth %d / floor %s / retries %d recorded, %d / %s / %d "+
+			"replayed — these are the three facts a replay may NOT re-derive from the tree's geometry "+
+			"(§7), so a difference means they were inferred instead of read",
+			a.Bounds.MaxDepth, a.Bounds.Floor, a.Bounds.MaxRetries,
+			b.Bounds.MaxDepth, b.Bounds.Floor, b.Bounds.MaxRetries))
+	}
+	if len(a.Adversarial) != len(b.Adversarial) {
+		out = append(out, fmt.Sprintf("  adversarial: %d findings recorded, %d replayed — inherited, since "+
+			"a surplus-budget pass (§3) cannot be re-run without spending",
+			len(a.Adversarial), len(b.Adversarial)))
+	}
+	if len(a.Priors) != len(b.Priors) {
+		out = append(out, fmt.Sprintf("  priors: %d recorded, %d replayed — an unpinned prior is a P8 break",
+			len(a.Priors), len(b.Priors)))
+	}
+	if a.ParentRun != b.ParentRun || a.LineOfInquiry != b.LineOfInquiry {
+		out = append(out, fmt.Sprintf("  lineage: parent %q / line %q recorded, %q / %q replayed — cumulative "+
+			"accounting across refine (§8.1) is inherited",
+			a.ParentRun, a.LineOfInquiry, b.ParentRun, b.LineOfInquiry))
+	}
+	if a.RegressTerminatedAt != b.RegressTerminatedAt {
+		out = append(out, fmt.Sprintf("  regress terminated at: %q recorded, %q replayed",
+			a.RegressTerminatedAt, b.RegressTerminatedAt))
+	}
 	if len(out) == 0 {
 		return "  the canonical bytes differ but no field-level difference was found —\n" +
 			"  likely a field ordering or encoding change, which is itself a P8 break"
 	}
 	return strings.Join(out, "\n")
+}
+
+// sameTags compares two scopes' tags. A helper because Scope holds a map, so Problem is
+// not comparable with == and the record-level check above cannot use it.
+//
+// NIL AND EMPTY ARE THE SAME SCOPE here, and that is not laziness: canonical() encodes both
+// the same way, so a nil-vs-empty difference cannot be what made two records' bytes differ.
+// Reporting it would name a difference the hashes do not see.
+func sameTags(a, b quarry.Scope) bool {
+	if len(a.Tags) != len(b.Tags) {
+		return false
+	}
+	for k, v := range a.Tags {
+		if w, ok := b.Tags[k]; !ok || v != w {
+			return false
+		}
+	}
+	return true
 }
 
 // sameVerdict compares two three-state verdicts. A *bool, not a bool: nil means NOT

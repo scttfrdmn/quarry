@@ -244,6 +244,10 @@ func runCmd(ctx context.Context, args []string) error {
 		// of having gated.
 		rec = rec.WithPlan(artifact.PlanID)
 	}
+	// #13: the record names the BUILD that produced it (P8). A no-op on a development
+	// build, which is why every --fake record in the suite and in testdata is unchanged by
+	// this — only a release-stamped binary asserts a producer.
+	rec = rec.WithProducer(quarry.Producer())
 	path := *out
 	if path == "" {
 		path = fmt.Sprintf("quarry-run-%s.json", rec.RunID[:12])
