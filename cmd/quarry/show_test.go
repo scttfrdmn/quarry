@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	quarry "github.com/scttfrdmn/quarry"
@@ -196,6 +197,130 @@ func TestTheDiffCatchesAnEditedRecord(t *testing.T) {
 	}
 	if !containsPhrase(got, "claim") {
 		t.Errorf("the diff must name claims as the field that differs, got:\n%s", got)
+	}
+}
+
+// THE FOURTH FALL-THROUGH, and this one is a test about the OTHER tests' blind spot.
+//
+// Found by reintroducing ReplayRecord's Producer re-derivation behind the BINARY's back: two
+// records differing only in Producer produced differing hashes, no named field, and the
+// encoder-blaming fallback — the same failure as the three above, on the fifth field the rule
+// "a fact of execution cannot be re-derived from the tree's geometry" applies to.
+//
+// WHY THE THREE TESTS ABOVE COULD NOT FIND IT. Each names one field it already knows about,
+// so each new record-level field arrives uncovered, and the block that checks them opens with
+// a comment predicting exactly this. A per-field test is a test of the field, not of the
+// reporter. So this one walks EVERY record-level field canonical() hashes and asserts each is
+// nameable — which fails the moment a sixteenth field is added without a check, rather than
+// after the next replay sends someone to the wrong file.
+func TestEveryRecordLevelFieldIsNameableByTheReporter(t *testing.T) {
+	base := recordWithMaxDepthLeaves()
+	base.Problem = quarry.Problem{Statement: "original", Scope: quarry.Scope{Tags: map[string]string{"a": "1"}}}
+
+	cases := []struct {
+		field string // for the failure message only
+		names string // a phrase the diff must contain, so a fallthrough is not enough
+		edit  func(*quarry.RunRecord)
+	}{
+		{"Producer", "producer", func(r *quarry.RunRecord) { r.Producer = "quarry-go/v9.9.9 (deadbee)" }},
+		{"PlanID", "plan", func(r *quarry.RunRecord) { r.PlanID = "abc123" }},
+		{"BoundBy", "bound by", func(r *quarry.RunRecord) { r.BoundBy = quarry.DenomSpend }},
+		{"Mode", "mode", func(r *quarry.RunRecord) { r.Mode = quarry.ModeRefine }},
+		{"Problem.Statement", "problem", func(r *quarry.RunRecord) { r.Problem.Statement = "widened" }},
+		// The scope half separately: Problem holds a map, so == cannot compare it and a
+		// check written with == would compile and silently miss this (P6).
+		{"Problem.Scope", "problem", func(r *quarry.RunRecord) {
+			r.Problem.Scope = quarry.Scope{Tags: map[string]string{"a": "2"}}
+		}},
+		{"Caps", "caps", func(r *quarry.RunRecord) { r.Caps.Spend = quarry.FromFloat(99) }},
+		{"Bounds", "bounds", func(r *quarry.RunRecord) { r.Bounds.MaxDepth = 11 }},
+		{"Adversarial", "adversarial", func(r *quarry.RunRecord) {
+			r.Adversarial = []quarry.AdversarialFinding{{}}
+		}},
+		{"Priors", "priors", func(r *quarry.RunRecord) { r.Priors = []quarry.PriorRef{{Name: "p", Version: "1"}} }},
+		{"ParentRun", "lineage", func(r *quarry.RunRecord) { r.ParentRun = "deadbeef" }},
+		{"LineOfInquiry", "lineage", func(r *quarry.RunRecord) { r.LineOfInquiry = "cafe" }},
+		{"RegressTerminatedAt", "regress", func(r *quarry.RunRecord) { r.RegressTerminatedAt = "n0.0" }},
+		{"Unverified", "unverified", func(r *quarry.RunRecord) { r.Unverified = []string{"n0.0.0"} }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			b := base
+			b.Problem.Scope = quarry.Scope{Tags: map[string]string{"a": "1"}} // don't share the map
+			tc.edit(&b)
+
+			// NON-VACUITY FIRST: the edit must actually change the canonical bytes. Otherwise
+			// this asserts the reporter names a difference the hashes cannot see, and a case
+			// whose edit was a no-op would look like coverage.
+			ab, err := base.Canonical()
+			if err != nil {
+				t.Fatal(err)
+			}
+			bb, err := b.Canonical()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(ab) == string(bb) {
+				t.Fatalf("the edit to %s did not change the canonical bytes, so this case "+
+					"cannot test the reporter at all", tc.field)
+			}
+
+			got := diffRecords(base, b)
+			if containsPhrase(got, "no field-level difference") {
+				t.Fatalf("a difference in %s fell through to the encoder-blaming fallback. "+
+					"that message asserts the defect is in canonical() when it is in this "+
+					"reporter, which is how three replays sent a reader to the wrong file:\n%s",
+					tc.field, got)
+			}
+			if !containsPhrase(got, tc.names) {
+				t.Errorf("the diff must name %s (looking for %q), got:\n%s", tc.field, tc.names, got)
+			}
+		})
+	}
+
+	// THE GUARD THAT MAKES THE TABLE A CLAIM ABOUT COMPLETENESS rather than a list of
+	// fourteen things someone happened to write down.
+	//
+	// BY REFLECTION OVER THE STRUCT, and the first version of this was a hardcoded count —
+	// which was itself vacuous, found by adding a sixteenth field behind the test's back and
+	// watching it pass. A constant cannot notice the struct grew; that is the whole condition
+	// this guard exists to detect, so the count has to be read from the type.
+	//
+	// Reflection alone would not do either: it names fields but cannot check that the diff
+	// MESSAGE distinguishes them, which is the actual guarantee. So the table above carries
+	// the per-field assertion and this cross-checks its coverage against the type.
+	covered := map[string]bool{}
+	for _, tc := range cases {
+		// "Problem.Statement" and "Problem.Scope" are two cases for one struct field.
+		name := tc.field
+		if i := indexOf(name, "."); i >= 0 {
+			name = name[:i]
+		}
+		covered[name] = true
+	}
+
+	// RunID is derived from every other field, so it cannot be edited independently.
+	// Outcomes is covered by the node-level tests above. Everything else must have a case.
+	exempt := map[string]string{
+		"RunID":    "derived from the other fields — editing it is not a divergence, it IS the hash",
+		"Outcomes": "covered per-node by the tests above",
+	}
+	rt := reflect.TypeOf(quarry.RunRecord{})
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		if !f.IsExported() || f.Tag.Get("json") == "-" {
+			continue // unhashed by canonical(), so it cannot cause a byte difference
+		}
+		if _, ok := exempt[f.Name]; ok {
+			continue
+		}
+		if !covered[f.Name] {
+			t.Errorf("RunRecord.%s has no case in this table, so no test in this file can tell "+
+				"whether diffRecords names it. A record differing only in %s would reach the "+
+				"encoder-blaming fallback and send a reader to canonical(). Add a case above "+
+				"and a check in diffRecords", f.Name, f.Name)
+		}
 	}
 }
 

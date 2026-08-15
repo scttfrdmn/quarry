@@ -107,6 +107,9 @@ func main() {
 	case "-h", "--help", "help":
 		usage()
 		return
+	case "-v", "--version", "version":
+		printVersion()
+		return
 	default:
 		fmt.Fprintf(os.Stderr, "quarry: unknown command %q\n\n", os.Args[1])
 		usage()
@@ -194,6 +197,33 @@ func (u usageError) Error() string { return u.err.Error() }
 // errors.Is on the inner error stop working the moment the outer classification was added.
 func (u usageError) Unwrap() []error { return []error{u.err, errUsage} }
 
+// printVersion states the build, and says plainly when there is nothing to state (#13).
+//
+// ON STDOUT, unlike usage(), because this is an answer to a question rather than a
+// complaint about a mistake — a host or a script asking `quarry --version` wants to
+// capture it, and a version on stderr is the sort of thing that gets discovered by a
+// pipeline that silently read an empty string.
+//
+// AN UNSTAMPED BUILD SAYS SO, rather than printing "dev" or "unknown". Absence is not
+// zero: the honest report is that this binary carries no release identity, which also
+// tells a reader why its records will carry no producer. The commit is still printed when
+// the toolchain embedded one, because it is the only provenance a development build has.
+func printVersion() {
+	v, c := quarry.Version(), quarry.Commit()
+	switch {
+	case v != "" && c != "":
+		fmt.Printf("quarry %s (%s)\n", v, c)
+	case v != "":
+		fmt.Printf("quarry %s\n", v)
+	case c != "":
+		fmt.Printf("quarry (unreleased build, commit %s)\n", c)
+		fmt.Println("  no release version was stamped, so records from this build carry no producer (#13, P8)")
+	default:
+		fmt.Println("quarry (unreleased build, no commit stamp)")
+		fmt.Println("  no release version was stamped, so records from this build carry no producer (#13, P8)")
+	}
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `quarry — bounded recursive decomposition with verified provenance
 
@@ -202,6 +232,7 @@ usage:
   quarry plan [flags] "<problem statement>"
   quarry show [flags] <record.json>
   quarry replay [flags] <record.json>
+  quarry --version
 
   run     execute a problem under a cap, drawing the live tree (§9)
   plan    propose a decomposition and stop, for approval BEFORE spend (§9, #15)

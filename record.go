@@ -62,12 +62,13 @@ func NewRunRecord(res Result, root Problem, caps Caps, mode Mode) RunRecord {
 // failure ErrRecordedGap fixed one layer down, and it bites the same records, because
 // a run bound by time is the run most likely to have gaps.
 //
-// Four fields are inherited and three re-derived, and the split is the whole point:
+// Most fields are inherited and three re-derived, and the split is the whole point:
 //
 //	inherited   Problem, Caps, Mode   the replay is ABOUT this run, not its own
 //	            BoundBy               which cap bit is a fact of the original execution
 //	            Adversarial           no seam replays the adversary (see below)
 //	            PlanID                the approval is the original's, not the replay's
+//	            Producer              the BUILD that ran it, not the one replaying it
 //	re-derived  Outcomes, Unverified  the tree IS what replay re-executes
 //	            RunID                 must be recomputed, or this proves nothing
 //
@@ -102,6 +103,18 @@ func ReplayRecord(res Result, orig RunRecord) RunRecord {
 		// ungated, which is the fact the field exists to preserve — or asserting an
 		// approval the replay never saw. The approval belongs to the original execution.
 		PlanID: orig.PlanID,
+		// INHERITED (#13, P8), and this is the field where inheriting is least obvious and
+		// most necessary. The tempting reading is that a replay is a new execution by THIS
+		// binary, so it should stamp its own version — but then a v0.2 binary replaying a
+		// v0.1 record produces a record that differs from the original in the producer field,
+		// and replay reports a divergence caused by nothing but the passage of time. That is
+		// precisely the failure BoundBy taught (see above): a fact of the ORIGINAL execution,
+		// re-derived by a replay that had no way to know it.
+		//
+		// The version of the binary doing the replaying is not lost — it is what `quarry
+		// replay` prints, and a divergence report names both. It is simply not part of the
+		// record being reproduced, because the record is ABOUT the original run.
+		Producer: orig.Producer,
 	}
 	r.RunID = contentHash(r)
 	return r
@@ -123,6 +136,34 @@ func ReplayRecord(res Result, orig RunRecord) RunRecord {
 // rather than at the CLI so no caller has to remember it.
 func (r RunRecord) WithPlan(planID string) RunRecord {
 	r.PlanID = planID
+	r.RunID = contentHash(r)
+	return r
+}
+
+// WithProducer names the build that produced this record, re-deriving the RunID (#13, P8).
+//
+// THE SAME SHAPE AS WithPlan for the same reasons — a method rather than a sixth
+// NewRunRecord parameter, and the re-hash lives here so no caller has to remember that
+// Producer is a hashed field.
+//
+// AN EMPTY VALUE IS A NO-OP, and that is the whole convention: a development build has no
+// version to state, so it passes "" and the record carries no producer rather than
+// carrying "dev" or "unknown". Absence is not zero — an unstamped record means "nothing
+// asserted", which is honest, while a defaulted string would be a claim about provenance
+// that no release process backed.
+//
+// THE EARLY RETURN IS NOT WHAT KEEPS A FRESH UNSTAMPED RECORD BYTE-IDENTICAL — omitempty
+// is, and an earlier draft of this comment credited the guard for it. Assigning "" over ""
+// and re-hashing yields the same bytes either way. What the guard prevents is UNSTAMPING an
+// already-stamped record: without it, WithProducer("") on a release build's record drops
+// the field and re-derives the unstamped identity, erasing a P8 fact. Reintroducing the
+// defect behind the test showed the test still passing, which is how the distinction
+// surfaced.
+func (r RunRecord) WithProducer(producer string) RunRecord {
+	if producer == "" {
+		return r
+	}
+	r.Producer = producer
 	r.RunID = contentHash(r)
 	return r
 }

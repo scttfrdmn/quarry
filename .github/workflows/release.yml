@@ -1,0 +1,293 @@
+# Tag-triggered release: signed multi-arch binaries the twins can verify BEFORE spawn (#13).
+#
+# WHY THIS IS NOT ci.yml. The standing caution is against a second pipeline beside one that
+# works, and this answers it rather than ignoring it: ci.yml runs on every push and PR with
+# `contents: read` and publishes nothing. Bolting tag-triggered publishing and
+# `id-token: write` onto it would widen the permissions of the workflow that runs most
+# often, on every fork PR. Different trigger, different permissions, different artifacts.
+#
+# THE SIGNING IDENTITY IS PART OF THE CONTRACT. cosign keyless means there is no long-lived
+# private key — the identity IS this file's path at this tag, certified by GitHub's OIDC
+# issuer. A host that runs `cosign verify-blob` without pinning that identity accepts any
+# valid Fulcio signature from anyone, which is the exact failure this exists to prevent. So
+# the identity string is published (README.md, docs/integration-requirements.md §6) and the
+# verify job below runs the published one-liner against the real release.
+#
+# A SIGNING STEP NOBODY HAS VERIFIED IS A GATE THAT PROVES NOTHING — the same class as a
+# lint config that silently truncates. That is why `verify` is a job here and not a manual
+# afterthought: the release is not considered done until the documented command has been run
+# against the published assets by a job that did not produce them.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+# READ-ONLY AT THE TOP LEVEL, so a job that forgets to declare its own permissions cannot
+# publish or sign. Each job below widens only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  # build — the four platform pairs, stamped. No write permissions of any kind.
+  # ---------------------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      # FAIL FAST IS WRONG HERE. A half-built matrix would let `release` run with three of
+      # four platforms and publish a release missing an arch — worse than no release, because
+      # a host pinning darwin/arm64 would see a tag that exists and an asset that does not.
+      fail-fast: true
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      # THE VERSION COMES FROM THE TAG, not from a file, so the two cannot disagree. A
+      # version constant in source is a thing to forget to bump; a tag is the trigger.
+      #
+      # THE COMMIT IS TRUNCATED TO SEVEN HERE to match quarry.Commit()'s own fallback
+      # formatting, so a stamped release build and a development build render the same shape.
+      - name: build (stamped)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          commit="${GITHUB_SHA:0:7}"
+          out="quarry_${version}_${GOOS}_${GOARCH}"
+          # -trimpath so the binary carries no absolute build path: it is provenance nobody
+          # asked for and it makes two builds of the same commit differ.
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/scttfrdmn/quarry.version=${version} -X github.com/scttfrdmn/quarry.commit=${commit}" \
+            -o "dist/${out}" ./cmd/quarry
+          echo "built dist/${out}"
+
+      # THE STAMP IS ASSERTED, not assumed, and only on the pair this runner can execute.
+      # An ldflags path that silently stops matching — a package move, a rename, a typo in
+      # the import path — fails as a NO-OP: -X against an unknown symbol is not an error, so
+      # the build stays green and every record from the release names no producer. That is
+      # precisely the P8 fact this issue exists to add, lost without a single warning.
+      - name: the stamp actually landed (P8)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          got=$(./dist/quarry_${version}_linux_amd64 --version)
+          echo "$got"
+          case "$got" in
+            *"$version"*) ;;
+            *) echo "the binary does not report the tag ${version}: -X stamped nothing."
+               echo "an -X against a symbol that does not exist is silently ignored, so this"
+               echo "would ship a release whose records name no producer (#13, P8)."
+               exit 1 ;;
+          esac
+          case "$got" in
+            *unreleased*) echo "reported itself as an unreleased build despite a version stamp"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quarry-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------
+  # release — checksums, cosign keyless signatures, SLSA provenance, and the GitHub release.
+  # This is the ONLY job with id-token: write.
+  # ---------------------------------------------------------------------------------------
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release and upload assets
+      id-token: write       # OIDC token for cosign keyless and for provenance
+      attestations: write   # SLSA provenance attached to the artifacts
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: four platform pairs are present
+        run: |
+          set -euo pipefail
+          ls -l dist
+          n=$(ls -1 dist | wc -l)
+          if [ "$n" -ne 4 ]; then
+            echo "expected 4 binaries, found $n — a release missing an arch is worse than no"
+            echo "release: the tag exists and the asset a host pinned does not."
+            exit 1
+          fi
+
+      # ONE CHECKSUM FILE, and the binaries are signed INDIVIDUALLY as well (below).
+      # Signed checksums alone would cover every binary transitively, but verifying one
+      # would then be two steps — verify the sums, then match a hash — and a two-step
+      # verification in a spawn path is a step that gets skipped. The twins verify the
+      # binary they are about to execute, directly.
+      - name: checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum quarry_* > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: sigstore/cosign-installer@v3
+
+      # KEYLESS: no private key exists to hold, rotate or leak. The certificate Fulcio
+      # issues binds the signature to this workflow at this tag, which is why the verify
+      # command MUST pin the identity — an unpinned `cosign verify-blob` succeeds on any
+      # valid signature from any Fulcio user and would report a stranger's binary as good.
+      #
+      # --bundle rather than separate .sig/.pem: one file per artifact carrying signature,
+      # certificate and the inclusion proof, verifiable offline against the trust root.
+      - name: sign (cosign keyless)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for f in quarry_* SHA256SUMS; do
+            cosign sign-blob --yes "$f" --bundle "${f}.cosign.bundle"
+            echo "signed $f"
+          done
+          ls -l
+
+      # SLSA provenance: which workflow, at which commit, produced which bytes. Distinct
+      # from the signature, which says only that this workflow vouched for the file.
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/quarry_*
+
+      # The release notes carry the verify one-liner WITH its identity constraints, because
+      # the place a host author looks first is the release page, and a copy-pasteable command
+      # missing --certificate-identity is the failure mode this issue is about.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          cat > notes.md <<EOF
+          ## Verify before you spawn
+
+          The signature is keyless: the signing identity is this repository's release
+          workflow at this tag, certified by GitHub's OIDC issuer. **Pin it.** A
+          \`verify-blob\` without \`--certificate-identity\` accepts any valid Sigstore
+          signature from anyone.
+
+          \`\`\`
+          cosign verify-blob quarry_${version}_linux_amd64 \\
+            --bundle quarry_${version}_linux_amd64.cosign.bundle \\
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${version}" \\
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          \`\`\`
+
+          To accept any release rather than this one, use
+          \`--certificate-identity-regexp '^https://github\.com/${GITHUB_REPOSITORY//\//\\/}/\.github/workflows/release\.yml@refs/tags/v'\`
+          — still pinned to this workflow, but not to a single tag.
+
+          Every binary and \`SHA256SUMS\` has a \`.cosign.bundle\` beside it, and SLSA
+          build provenance is attested for each binary (\`gh attestation verify\`).
+
+          Records written by this build name it in \`RunRecord.Producer\` (P8).
+          EOF
+          gh release create "$version" dist/* \
+            --title "quarry $version" \
+            --notes-file notes.md \
+            --verify-tag
+
+  # ---------------------------------------------------------------------------------------
+  # verify — run the PUBLISHED one-liner against the PUBLISHED assets, from a job that did
+  # not build or sign them. Read-only, no OIDC token.
+  # ---------------------------------------------------------------------------------------
+  #
+  # THIS JOB IS THE ACCEPTANCE CRITERION, not a formality. "cosign signed it" is a claim
+  # about a step's exit code; "the documented command verifies the downloaded asset" is a
+  # claim about the thing a host will actually do. The two came apart in every signing
+  # rollout that ever shipped a bundle nobody could check.
+  #
+  # IT DOWNLOADS FROM THE RELEASE rather than reusing the build artifacts, because an asset
+  # mangled on upload — wrong file, truncated, the bundle paired with the wrong binary — is
+  # invisible to a check that verifies the local copy.
+  verify:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: sigstore/cosign-installer@v3
+
+      - name: the documented one-liner verifies the published binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          bin="quarry_${version}_linux_amd64"
+          gh release download "$version" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$bin" --pattern "${bin}.cosign.bundle" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.cosign.bundle
+
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${version}"
+          issuer="https://token.actions.githubusercontent.com"
+
+          cosign verify-blob "$bin" \
+            --bundle "${bin}.cosign.bundle" \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer "$issuer"
+
+          cosign verify-blob SHA256SUMS \
+            --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer "$issuer"
+
+          # The checksums cover the binary too, so a mismatch here means the two assets
+          # disagree even though both signatures are valid.
+          grep " ${bin}\$" SHA256SUMS | sha256sum -c -
+
+      # A CONSTRAINT THAT ACCEPTS EVERYTHING IS NOT A CONSTRAINT, and a verify job that only
+      # ever asserts success cannot tell the two apart. So the wrong identity must be
+      # REJECTED — reintroducing the defect (dropping the flag, or pinning something a host
+      # might plausibly typo) behind this job's back.
+      - name: a wrong identity is refused
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          bin="quarry_${version}_linux_amd64"
+          if cosign verify-blob "$bin" \
+              --bundle "${bin}.cosign.bundle" \
+              --certificate-identity "https://github.com/attacker/quarry/.github/workflows/release.yml@refs/tags/${version}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" 2>/dev/null; then
+            echo "verification SUCCEEDED against a foreign signing identity. the identity"
+            echo "constraint is not being enforced, so the documented one-liner would report"
+            echo "anyone's binary as ours (#13)."
+            exit 1
+          fi
+          echo "a foreign identity is refused, as it must be"
+
+      - name: the published binary reports the tag it was released as
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          chmod +x "quarry_${version}_linux_amd64"
+          got=$("./quarry_${version}_linux_amd64" --version)
+          echo "$got"
+          case "$got" in
+            *"$version"*) ;;
+            *) echo "the published binary does not name ${version}"; exit 1 ;;
+          esac
