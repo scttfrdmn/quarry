@@ -33,16 +33,20 @@ func runCmd(ctx context.Context, args []string) error {
 		deadline = fs.Duration("deadline", 0, "latency cap; a run may be bound by time instead of money (§3.1)")
 		due      = fs.String("due", "",
 			"absolute RFC3339 deadline; the host owns the clock (#11 D2). a due date with no --deadline is deferrable (§3.1)")
-		depth      = fs.Int("depth", 3, "max recursion depth — a BACKSTOP, not the design (P2)")
-		fake       = fs.Bool("fake", false, "use the built-in fake provider: no credentials, no money, synthetic answers")
-		model      = fs.String("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "explicit model version, never an alias (P8)")
-		region     = fs.String("region", "us-east-1", "AWS region for Bedrock")
-		out        = fs.String("out", "", "write the run record here (default: quarry-run-<hash>.json)")
-		quiet      = fs.Bool("quiet", false, "no live tree; print the summary only")
-		latency    = fs.Duration("fake-latency", 120*time.Millisecond, "per-call delay in --fake mode, so the live tree is watchable")
-		scopeS     = fs.String("scope", "", "scope tags as k=v,k=v — carried into every cache key (P6)")
-		retries    = fs.Int("retries", 1, "re-solves of a leaf that fails verification (§5)")
-		eventsJSON = fs.Bool("events-json", false,
+		depth = fs.Int("depth", 3, "max recursion depth — a BACKSTOP, not the design (P2)")
+		fake  = fs.Bool("fake", false, "use the built-in fake provider: no credentials, no money, synthetic answers")
+		model = fs.String("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+			"explicit model version, never an alias (P8); the default for any role left unset")
+		modelPlanner = fs.String("model-planner", "", "model for the planner role; falls back to --model")
+		modelSolver  = fs.String("model-solver", "", "model for the solver role; falls back to --model")
+		modelReducer = fs.String("model-reducer", "", "model for the reducer role; falls back to --model")
+		region       = fs.String("region", "us-east-1", "AWS region for Bedrock")
+		out          = fs.String("out", "", "write the run record here (default: quarry-run-<hash>.json)")
+		quiet        = fs.Bool("quiet", false, "no live tree; print the summary only")
+		latency      = fs.Duration("fake-latency", 120*time.Millisecond, "per-call delay in --fake mode, so the live tree is watchable")
+		scopeS       = fs.String("scope", "", "scope tags as k=v,k=v — carried into every cache key (P6)")
+		retries      = fs.Int("retries", 1, "re-solves of a leaf that fails verification (§5)")
+		eventsJSON   = fs.Bool("events-json", false,
 			"emit the framed RunEvent stream as NDJSON on stdout; human output moves to stderr (#9)")
 		liveEvents = fs.Bool("live-events", false,
 			"with --events-json, also emit per-node enter/exit events AS THEY HAPPEN (#14)")
@@ -127,7 +131,12 @@ func runCmd(ctx context.Context, args []string) error {
 		Cache: quarry.NewMemCache(time.Hour),
 	}
 
-	if err := wireSeams(ctx, e, *fake, *model, *region, *latency); err != nil {
+	// Resolved once, here, so the Authorizes call below (which needs the planner's
+	// resolved model, not the bare --model fallback) and wireSeams see the same values.
+	plannerModel := resolveModel(modelPlanner, *model)
+	solverModel := resolveModel(modelSolver, *model)
+	reducerModel := resolveModel(modelReducer, *model)
+	if err := wireSeams(ctx, e, *fake, plannerModel, solverModel, reducerModel, *region, *latency); err != nil {
 		return err
 	}
 
@@ -144,14 +153,14 @@ func runCmd(ctx context.Context, args []string) error {
 		if aerr != nil {
 			return aerr
 		}
-		plannerModel := *model
+		effectivePlannerModel := plannerModel
 		if *fake {
-			plannerModel = quarry.FakePlannerModel
+			effectivePlannerModel = quarry.FakePlannerModel
 		}
 		// D1 and D2, in one call: the cap, the scope, the floor, the depth and the model
 		// mode. A usage error rather than a fault — nothing ran, and the caller can fix it
 		// by matching the flags or re-planning.
-		if aerr := art.Authorizes(quarry.Problem{Statement: statement, Scope: scope}, caps, floor, cfg.Depth, plannerModel); aerr != nil {
+		if aerr := art.Authorizes(quarry.Problem{Statement: statement, Scope: scope}, caps, floor, cfg.Depth, effectivePlannerModel); aerr != nil {
 			return usageErrf("%w", aerr)
 		}
 		// The approved apportionment, re-derived through THIS ledger and checked against
@@ -374,13 +383,33 @@ var errNoAnswer = errors.New("no answer")
 // summary has already said it at length, in the sentence a person reads.
 var errTimeTruncated = errors.New("time-truncated")
 
+// resolveModel is "role flag if set, else --model" (design.md §2, Multi-model roles).
+// Each role flag defaults to "" so this is a value check, not an fs.Visit lookup —
+// simpler than threading "was it set" through two flag sets, and there is no real
+// ambiguity to resolve: a user who explicitly repeats --model's own default value is
+// behaviorally identical to inheriting it.
+func resolveModel(roleFlag *string, fallback string) string {
+	if *roleFlag == "" {
+		return fallback
+	}
+	return *roleFlag
+}
+
 // wireSeams installs the three stochastic seams — planner, solver, reducer.
 //
 // They are wired TOGETHER because they must agree about what backs them: a fake
 // planner over a live solver would spend real money on a mechanical split, and a live
 // planner over a fake solver would pay for a decomposition of answers that mean
 // nothing. Neither combination is useful, so neither is reachable.
-func wireSeams(ctx context.Context, e *quarry.Executor, fake bool, model, region string, latency time.Duration) error {
+//
+// THREE MODEL STRINGS, NOT ONE (design.md §2, Multi-model roles): the planner and
+// reducer are the error concentrator and the merge — the calls worth a strong model —
+// while the solver runs at every leaf and dominates node count, so it is where a
+// cheaper model buys the most. Each is independent because BedrockPlanner, BudgetedSolver
+// and BedrockReducer each own their own Model field; one BedrockProvider backs all three
+// as long as every model used is a key in the shared price sheet.
+func wireSeams(ctx context.Context, e *quarry.Executor, fake bool,
+	plannerModel, solverModel, reducerModel, region string, latency time.Duration) error {
 	if fake {
 		fp := &provider.FakeProvider{Latency: latency, Now: time.Now}
 		e.Planner = provider.FakePlanner{}
@@ -388,14 +417,22 @@ func wireSeams(ctx context.Context, e *quarry.Executor, fake bool, model, region
 		// of --fake is that a path reachable there stays reachable there; wiring the
 		// unbudgeted solver here would leave P9's spend-site half exercised only by a run
 		// that costs money.
-		e.Solver = provider.BudgetedSolver{Provider: fp, Model: "fake"}
+		//
+		// solverModel, NOT the literal "fake": FakePlanner and ConcatReducer call no
+		// provider and carry no Model field, so there is nothing for --model-planner or
+		// --model-reducer to affect under --fake — but the SOLVER's resolved model reaches
+		// Sample.Model and, from there, NodeOutcome.Model (executor.go), which is a
+		// recorded fact of the run. Hardcoding "fake" here would make --model-solver
+		// silently no-op in this project's own primary test harness, which is worse than
+		// the flag doing nothing anywhere: --fake is how this system is demonstrated.
+		e.Solver = provider.BudgetedSolver{Provider: fp, Model: solverModel}
 		e.Reducer = quarry.ConcatReducer{Sep: "\n"}
 		// Keyed on the bare STATEMENT while the solver now sends a wrapped prompt, so the
 		// estimate understates the halo by the preamble. Advisory either way (P4) — it
 		// sizes admission and is not served as an answer — and the alternative is worse:
 		// pricing the real prompt here would duplicate leafPrompt's construction in a
 		// second place, where the two could drift apart unnoticed.
-		e.Estimate = func(p quarry.Problem) quarry.Units { return fp.Estimate(p.Statement, "fake") }
+		e.Estimate = func(p quarry.Problem) quarry.Units { return fp.Estimate(p.Statement, solverModel) }
 		return nil
 	}
 
@@ -406,27 +443,39 @@ func wireSeams(ctx context.Context, e *quarry.Executor, fake bool, model, region
 		"us.anthropic.claude-sonnet-4-5-20250929-v1:0": {InputPerMTok: 3.0, OutputPerMTok: 15.0},
 		"us.meta.llama3-3-70b-instruct-v1:0":           {InputPerMTok: 0.72, OutputPerMTok: 0.72},
 	}
-	if _, priced := prices[model]; !priced {
-		// Refusing is right. An unpriced model produces a record whose cost receipt reads
-		// zero — a receipt that is not merely imprecise but actively false, and P8 says the
-		// record outlives the model.
-		return usageErrf("no price sheet for model %q\n  an unpriced model records every call as free, "+
-			"which makes the cost receipt a lie (§8). add it to run.go's price table", model)
+	// Each role's model is checked independently, because the roles may legitimately
+	// point at different models (§2) — a refusal has to name which flag to fix, or a
+	// caller running three different models has no way to act on it.
+	for _, role := range []struct{ flag, model string }{
+		{"--model-planner", plannerModel},
+		{"--model-solver", solverModel},
+		{"--model-reducer", reducerModel},
+	} {
+		if _, priced := prices[role.model]; !priced {
+			// Refusing is right. An unpriced model produces a record whose cost receipt reads
+			// zero — a receipt that is not merely imprecise but actively false, and P8 says the
+			// record outlives the model.
+			return usageErrf("no price sheet for model %q\n  an unpriced model records every call as free, "+
+				"which makes the cost receipt a lie (§8). add it to run.go's price table (%s)", role.model, role.flag)
+		}
 	}
 	p, err := provider.NewBedrockProvider(ctx, region, prices)
 	if err != nil {
 		return fmt.Errorf("build bedrock provider (is AWS_PROFILE set?): %w", err)
 	}
-	e.Planner = provider.NewBedrockPlanner(p, model)
+	e.Planner = provider.NewBedrockPlanner(p, plannerModel)
 	// BudgetedSolver, not ProviderSolver: the leaf is the only thing that spends money,
 	// so it is where P9 has to hold. Its allocation reaches the model as a word budget
 	// and as a token ceiling sized from this price sheet (provider/solver.go).
-	e.Solver = provider.BudgetedSolver{Provider: p, Model: model}
+	e.Solver = provider.BudgetedSolver{Provider: p, Model: solverModel}
 	// Planner and reducer are DIFFERENT agents by design (§2): the reducer must see what
 	// returned without inheriting the priors that produced the split. Same provider,
-	// separate call, separate prompt.
-	e.Reducer = provider.NewBedrockReducer(p, model)
-	e.Estimate = func(prob quarry.Problem) quarry.Units { return p.Estimate(prob.Statement, model) }
+	// separate call, separate prompt — and, now, potentially a separate model.
+	e.Reducer = provider.NewBedrockReducer(p, reducerModel)
+	// Prices the SOLVER's own model — admission today only ever sizes the leaf call
+	// (#26/#32 track extending this to the planner and reducer, which must price against
+	// their own configured models when that lands, not reuse this closure).
+	e.Estimate = func(prob quarry.Problem) quarry.Units { return p.Estimate(prob.Statement, solverModel) }
 	return nil
 }
 

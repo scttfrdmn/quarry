@@ -335,6 +335,58 @@ func TestThePlanFileIsTheCanonicalBytes(t *testing.T) {
 	}
 }
 
+// ------------------------------------------------------------ multi-model roles (#29)
+
+// TestPlanCmdModelPlannerFlagResolvesLikeRun mirrors run's fallback-and-override
+// behaviour on the plan side: --model-planner under --fake is accepted and harmless
+// (planSeams' fake branch never checks a price sheet, so it cannot be refused). The
+// live-resolution half is proved by TestUnpricedPlannerModelNamesTheFlag below rather
+// than by a genuinely live plan here — planOnce calls planner.Plan, an actual Converse
+// call, unlike wireSeams' construction-only path in main_test.go, so this test must not
+// attempt one.
+func TestPlanCmdModelPlannerFlagResolvesLikeRun(t *testing.T) {
+	dir := t.TempDir()
+	fakePath := filepath.Join(dir, "fake.json")
+	if err := planCmd(context.Background(), []string{
+		"--fake", "--cap", "1.00", "--depth", "2", "--model-planner", "planner-marker-v1",
+		"--out", fakePath, gateQuestion,
+	}); err != nil {
+		t.Fatalf("quarry plan --fake --model-planner: %v", err)
+	}
+	fakeArt, err := readPlanArtifact(fakePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fakeArt.PlannerModel != quarry.FakePlannerModel {
+		t.Errorf("a --fake plan must still be marked synthetic regardless of --model-planner, got %q",
+			fakeArt.PlannerModel)
+	}
+}
+
+// TestUnpricedPlannerModelNamesTheFlag is plan.go's half of #29's refusal-naming
+// requirement, exercised without --fake so it reaches planSeams' live price-sheet
+// check — which refuses before provider.NewBedrockProvider or any AWS call.
+func TestUnpricedPlannerModelNamesTheFlag(t *testing.T) {
+	err := planCmd(context.Background(), []string{
+		"--cap", "1.00", "--depth", "2", "--model-planner", "totally-unpriced-model-vX", gateQuestion,
+	})
+	if err == nil {
+		t.Fatal("--model-planner at an unpriced model must be refused")
+	}
+	if !strings.Contains(err.Error(), "--model-planner") {
+		t.Errorf("refusal must name --model-planner specifically, got %q", err.Error())
+	}
+}
+
+// There is deliberately no unit test asserting that `quarry plan --model-solver X` is
+// refused: planSeams never wires a Solver or Reducer, so plan.go does not declare
+// --model-solver/--model-reducer, and an unrecognized flag under flag.ExitOnError calls
+// os.Exit(2) INSIDE fs.Parse — it never returns an error planCmd's caller can catch, so
+// there is no way to observe this through a Go test without killing the test binary.
+// Confirmed instead by running the real binary (see the #29 verification log): exit 2,
+// "flag provided but not defined: -model-solver". #30, which gives these flags somewhere
+// to go (PlanArtifact.SolverModel/ReducerModel), is what will make them recognized.
+
 // `quarry plan` must not promise a split the run would never perform. A root the executor
 // terminates before planning yields a declined artifact rather than a fiction.
 func TestPlanDeclinesWhereTheExecutorWouldNotEvenPlan(t *testing.T) {
