@@ -300,6 +300,131 @@ that produced the split. The Planner is the error concentrator in the system: it
 reasoning with the least information, planning the split before knowing what the children will
 find. Every downstream node inherits its mistakes.
 
+### Multi-model roles
+
+Planner, Solver and Reducer are three seams (`seams.go`) and, until now, one model string wired
+into all three — `wireSeams` took a single `--model` and built every seam from it. Nothing in the
+interfaces required that: `BedrockPlanner.Model`, `BudgetedSolver.Model` and `BedrockReducer.Model`
+were always independent fields. The uniformity was a CLI default, not a design constraint.
+
+**Controller and worker is the right split, not depth.** The planner and reducer are the error
+concentrator and the merge (above) — the two calls that see a subtree's shape rather than one
+leaf's content, and P3 says verify them hardest. They are the calls worth a stronger model; the
+solver runs at every leaf and dominates node count, so it is where a cheaper model buys the most.
+`--model-planner`, `--model-solver` and `--model-reducer` are the granularity that matters —
+`--model` remains and sets the default for any role left unset, so every existing invocation
+still means what it meant.
+
+**One planner model per tree, not one per depth.** A deep node re-planning its own subtree is
+tempting to price down the same way solver calls are. Declined: only the root's plan is approved
+(below, "A plan can be approved before it is executed"), and a gate that pins a model means
+something only if every planner call it covers used it. A depth-varying planner model needs
+either the gate to approve every depth's model — which it does not — or an unpinned model change
+happening for free below the approval boundary, which is the same shape of widening P6 forbids on
+scope (P6, P9). If per-depth planner economics matter enough to revisit, that is §12, not a
+default.
+
+**The gate learns two more fields, not a tighter check on the one it has (P9, D1).** `Authorizes`
+already refuses a live plan proposed by one *bucket* of planner (fake vs. real) run against the
+other — a synthetic plan's costs are synthetic, so its cap is not the same quantity as a real
+one (D1) — and deliberately does **not** pin which live model, "because below the approved root
+the planner is the run's own and choosing it is not the gate's business." That reasoning does not
+generalize to the Solver and Reducer without re-examining it, and it does not survive the
+re-examination for the Solver: unlike the planner's model, which affects only how the split was
+proposed (something the mechanical checks in §2 already re-verify against the approved
+apportionment), the Solver's model affects *what the answer is made of*, and a plan approved
+against one solver quality silently executed against a cheaper one is exactly the "same split
+under different money" substitution D1 exists to catch, one layer over from cap. So
+`PlanArtifact` gains `SolverModel` and `ReducerModel` — declared intent, since planning never
+calls either seam — and `Authorizes` requires exact equality on both, while `PlannerModel` keeps
+its existing bucket-only check. An artifact predating these fields carries them empty, which means
+*unrecorded*, not *unconstrained* — the same absence-is-not-zero discipline `PlanWeight` uses — so
+`Authorizes` skips the comparison only for a field the artifact itself never populated.
+
+**`NodeOutcome` names the model that solved a leaf and never the model that planned or reduced
+(P8).** Harmless while one instance did every job; once Planner and Reducer are configured
+independently, an internal node's receipt cannot say which model produced its decomposition or its
+merge — exactly what §8's "model IDs and versions" promises. `NodeOutcome` gains `PlannerModel`
+and `ReducerModel`, hashed like every other model field, empty on a leaf (used neither) and on a
+cache hit (used no live call).
+
+**Estimation must size per role, once a role is admitted at all (P4, P3).** `Executor.Estimate`
+today prices only the Solver's call, because leaf admission is the only call priced at all — issue
+#26 tracks that the planner's own call inside a run is never debited or admitted, live-measured at
+roughly a quarter of the run's recorded cost. Whenever that closes, pricing a planner or reducer
+call at the worker's rate under-reserves for a pricier controller model, and the Reserve that
+exists to fund "the reducer's own cost" (§3) comes up short on exactly the runs that adopted a
+strong controller model on purpose. Any admission added for the planner or reducer must price
+against that role's own configured model, not reuse the Solver's estimate closure.
+
+**Verification density does not vary with model choice yet, and that is deliberate.** P3's ladder
+balances verify cost against downstream exposure, and a cheaper solver model is a plausible source
+of higher error rate at equal dollar exposure — a real reading of "exposure" the ladder, keyed on
+subtree cost alone, does not see. Nothing here becomes a formula: §13 already calls the ladder's
+cost calibration guesswork until measured, and inventing a second guess — a model-weakness
+multiplier with no corpus behind it — repeats the mistake the §8.2 Goodhart guardrail exists to
+prevent. What ships now is the data: the leaf `Model` field plus the new `PlannerModel`/
+`ReducerModel` make "stability rate by solver model" a telemetry query (§8.2) rather than an open
+question. Whether the ladder should act on what that query finds stays in §12.
+
+### Escalation: a leaf's own nested call, not a message to a parent
+
+A leaf may find its own allocation insufficient for reasoning it can nonetheless see the shape
+of — *I am a small model stuck on one sub-step; a stronger model could resolve it in one call.*
+**This is answered without touching the tree at all**: the Solver is free to issue a second
+`Provider.Complete` call, to a different (stronger) model, from inside `Solve`, and fold the
+answer into the one `Sample` it returns. "Parent" in the colloquial framing of this feature is a
+stronger *model*, never the actual Planner/Reducer graph node — nothing about the plan, the
+apportionment, or the tree shape changes.
+
+**Billed to the same node's own allocation, decided at solve time, planned at plan time (P9).**
+The planner already sized this node's allocation before either call happens; whether the node
+spends that allocation on one call or two is a solve-time decision exactly like a
+verifier-triggered retry (§5) — `Debit` re-admits against the actual total the same way it
+re-admits a retried leaf's second attempt. There is no new budget line: not the parent's Reserve,
+which funds the *parent's* reduce, not a *child's* extra call — reaching into it would mean the
+child spending money the plan never apportioned to it, the actual P9 violation the mechanism must
+avoid — and not a planner-set-aside "escalation budget" either, which would ask the planner to
+forecast which leaves will need a second opinion, exactly the estimation burden the relative-weight
+design (above) exists to avoid. The node's own floor and allocation are the ceiling; an escalation
+that would blow through them is refused by the same `Admit` gate that already governs the node's
+calls, not a new one.
+
+**No P6 exposure.** The escalation call runs under the leaf's own `Scope` — it asks a different
+*model*, not a different *authority* — so `NarrowsTo` never enters into it. This is the sharpest
+way this differs from the structural case (§12).
+
+**Recorded, not inferred.** `Sample` and `NodeOutcome` gain `Escalations []Escalation`
+(`Question`, `Answer`, `Model`, `ModelVersion`, `Cost`, `HaloTokens`, `GeneratedTokens`) — a fact
+of execution with no fallback derivation at all, more so than `BoundBy` or the depth bound (§7):
+nothing about a node's *content* hints that a second, different-model call happened underneath
+it. Hashed like `Model`/`Cost`, since it is a deterministic property of the call, not wall-clock.
+`Cost` on the outcome already includes the escalation's cost — the receipt must add up (§8) — so
+`Escalations` is provenance on top of a total already accounted for, never a second place the same
+money is counted.
+
+**Replay is not free, but it is small.** `RecordedProvider` keys a sample by
+`replayKey(Problem{Statement: prompt}, model)` (§7). An escalation call's prompt is not the leaf's
+bare statement — it is the clarifying question, addressed to a different model — so
+`NewRecordedProvider` needs a second indexing pass over `o.Escalations`, keying each one exactly
+like a leaf sample. This reuses `RecordedProvider` itself, no new type, because an escalation call
+*is* a `Provider.Complete` call under the hood. It hits on replay only if the escalation question
+is a **pure function of the base call's content** — a fixed marker, not a second independent
+model decision about whether or what to ask — the same purity rule `ClaimExtractor` already lives
+under. A Solver that re-decided whether to escalate by calling the base model again on the replay
+path would draw a different question and correctly miss, reporting a divergence.
+
+#### Alternatives considered
+
+- **Structural escalation to the actual parent node.** Genuinely different in kind, not degree: it
+  is new spend at an ancestor decided mid-subtree, by a node that is not the Planner, and it
+  introduces a real query/answer relationship the record has never had to express. Deferred; §12.
+- **A separate ledger line ("escalation budget") set aside by the planner per subtree.** Would
+  work but asks the planner to forecast which leaves will need a second opinion — exactly the
+  estimation burden P9's relative-weight design exists to avoid. The node's own allocation,
+  already sized to cover one solve plus its verification (the floor, §3), is the simpler and
+  already-trusted mechanism.
+
 ### DAG, not tree
 
 Sub-problems are content-addressed (§6), so identical sub-problems resolve to one call and a node
@@ -1689,6 +1814,37 @@ Steps 1–7 have no AWS dependency and no LLM dependency beyond a provider inter
   of account; a campus allocation unit, if it ever exists, converts at the edge like USD does.
 - **Does the planner ever see sibling results?** Strict independence is simpler and is assumed
   here; a re-planning step after partial returns is more powerful and much harder to account for.
+- **Can a node escalate a query to its actual parent mid-execution?** Not the same-node nested call
+  a leaf makes to a stronger model, which is decided (§2, "Escalation"). A genuine back-edge — a
+  descendant suspends, a real ancestor node spends new money to answer, and the descendant resumes
+  with the answer folded in — does not exist in quarry's model, and it is unresolved rather than
+  merely unbuilt, for three reasons:
+  - It is a runtime variant of the question above it: an ancestor's answer to one child can be, or
+    can be derived from, another child's already-returned result, which is exactly the
+    sequential-chain shape §2 excludes for breaking child independence (apportionment, DAG
+    collapse and replication all assume it). Whether an ancestor may answer from sibling material,
+    or only from what it knows independent of any child, is undecided.
+  - P6 needs a rule this project has never needed before: the answer must be checked against the
+    **asking** node's scope, not the answering node's — an ancestor typically holds broader
+    authority than the child it funded, and an answer built for the asker's `Scope.Tags` is the
+    only way "the answer widens" does not become a second, subtler route to the confused-deputy
+    problem P6 exists to close. No mechanism to filter arbitrary prose content down to a scope
+    boundary exists — cache keys only ever needed to compare tags for equality, never to redact
+    content — and building one is closer in difficulty to claim extraction than to anything
+    already in the ledger.
+  - The plumbing gap is not cancellation (§10). A child blocked waiting for an answer, with the
+    deadline expiring mid-wait, is the ordinary `ctx.Done()` case every in-flight call already has,
+    and it already resolves to a gap under the standing "only time produces a gap" ruling with no
+    new executor state required. The actual gap: a parent's goroutine, while blocked in
+    `errgroup.Wait()` on its children, has never had to *service* anything from them — today a
+    child communicates with its parent by returning, once, and nothing else. A rendezvous that
+    lets a live parent goroutine spend money mid-wait, without perturbing its own deadline or
+    reserve accounting, is unbuilt in a way none of the existing seams anticipate.
+
+  Filed as open rather than committed: a wrong answer here — an ungated escalation channel, or an
+  answer path that leaks sibling content — is exactly the confused-deputy and
+  "child consumes another child's answer" defect P6 and §2's excluded shapes were written to
+  prevent, and there is no calibration corpus or live run yet to test a design against.
 - **Failure semantics of a partially-completed tree.** Largely settled by §3.1 — a deadline leaves
   no option but to return what exists, so *degraded answer with gaps marked* it is. The
   silent-vs-named half is now **decided: named, always.** An unreturnable node is a gap, and a gap
