@@ -200,6 +200,45 @@ func TestRunRefusesAnApprovedPlanUnderAWiderScope(t *testing.T) {
 	}
 }
 
+// #30 as a host experiences it: a plan approved with one solver model, executed with a
+// different one. Reaches through the full CLI rather than calling Authorizes directly,
+// same reason every other gate test in this file does — four of five defects in the
+// first live round were invisible to a suite that tested the types alone.
+//
+// UNDER --fake, DELIBERATELY, and this is possible only because of #29: wireSeams
+// threads a real resolved model string into BudgetedSolver even in fake mode, so
+// --model-solver is not bucketed away the way --model-planner is. Without that, this
+// case would need a live run to observe at all.
+func TestRunRefusesAnApprovedPlanUnderADifferentSolverModel(t *testing.T) {
+	dir := t.TempDir()
+	planPath := planFile(t, dir, "--model-solver", "approved-solver")
+
+	err := runCmd(context.Background(), []string{
+		"--plan", planPath, "--fake", "--quiet", "--cap", "1.00", "--depth", "2",
+		"--model-solver", "a-cheaper-solver", "--out", filepath.Join(dir, "r.json"), gateQuestion,
+	})
+	if !errors.Is(err, quarry.ErrPlanNotAuthorized) {
+		t.Fatalf("a different solver model must be refused (D1), got %v", err)
+	}
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("want exit %d, got %d", exitUsage, got)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "r.json")); statErr == nil {
+		t.Fatal("a refused run must not write a record")
+	}
+	if !strings.Contains(err.Error(), "approved-solver") || !strings.Contains(err.Error(), "a-cheaper-solver") {
+		t.Fatalf("the refusal must name both models, got %q", err.Error())
+	}
+	// THE SAME solver model is accepted, which is what proves the refusal came from the
+	// mismatch rather than from stating a solver model at all.
+	if err := runCmd(context.Background(), []string{
+		"--plan", planPath, "--fake", "--quiet", "--cap", "1.00", "--depth", "2",
+		"--model-solver", "approved-solver", "--out", filepath.Join(dir, "ok.json"), gateQuestion,
+	}); err != nil {
+		t.Fatalf("the solver model it was planned with must be accepted: %v", err)
+	}
+}
+
 // THE TAMPER CASE at the CLI, and the asymmetry with readRecord is the point: a record
 // that fails its hash is warned about, an artifact is REFUSED. Honouring an edited plan
 // would spend on a split nobody approved while recording an approval nobody gave.

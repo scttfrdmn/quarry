@@ -75,10 +75,13 @@ func planCmd(ctx context.Context, args []string) error {
 		fake      = fs.Bool("fake", false, "use the built-in fake planner: no credentials, no money")
 		model     = fs.String("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 			"explicit model version, never an alias (P8); the default for any role left unset")
-		// Only the planner role, deliberately: planSeams never wires a Solver or Reducer,
-		// so there is no --model-solver/--model-reducer for this verb to accept yet — that
-		// arrives with the plan-artifact fields that give them somewhere to go (design.md §2).
 		modelPlanner = fs.String("model-planner", "", "model for the planner role; falls back to --model")
+		// #30: planSeams still never wires a Solver or Reducer — planning calls neither
+		// seam — so these two are DECLARED INTENT rather than a live model choice. They
+		// exist so Authorizes can pin what a run executing this plan is expected to use;
+		// see PlanArtifact.SolverModel/ReducerModel.
+		modelSolver  = fs.String("model-solver", "", "the solver model a run of this plan is expected to use; falls back to --model")
+		modelReducer = fs.String("model-reducer", "", "the reducer model a run of this plan is expected to use; falls back to --model")
 		region       = fs.String("region", "us-east-1", "AWS region for Bedrock")
 		scopeS       = fs.String("scope", "", "scope tags as k=v,k=v; the plan may not be executed under a WIDER scope (D2)")
 		out          = fs.String("out", "", "write the plan artifact here (default: quarry-plan-<hash>.json)")
@@ -228,7 +231,8 @@ func planCmd(ctx context.Context, args []string) error {
 	est := quarry.Project(mean, varc, cfg.Depth, meter.Estimate(statement, planModel))
 
 	spent, calls := meter.Spent()
-	art := quarry.NewPlanArtifact(p, caps, floor, cfg.Depth, plan, allocs, est, spent, planCap, planModel)
+	art := quarry.NewPlanArtifact(p, caps, floor, cfg.Depth, plan, allocs, est, spent, planCap,
+		planModel, resolveModel(modelSolver, *model), resolveModel(modelReducer, *model))
 
 	b, err := art.Canonical()
 	if err != nil {
