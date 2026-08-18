@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	quarry "github.com/scttfrdmn/quarry"
+	"github.com/scttfrdmn/quarry/provider"
 )
 
 // The exit-code vocabulary is a CONTRACT TWO OTHER REPOS BRANCH ON (#9 D4), and these
@@ -242,6 +243,147 @@ func TestTheDegradedRunIsDeliberatelyNotAnErrorCode(t *testing.T) {
 	if !reported {
 		t.Error("a degraded run exits 0, so the STREAM must say it degraded and by which " +
 			"denomination — otherwise the ruling hides the fact instead of classifying it")
+	}
+}
+
+// ------------------------------------------------------------ multi-model roles (#29)
+
+// TestModelAloneStillSetsEverySolverLeafWhenNoRoleFlagIsGiven is the regression proof
+// that plain --model, with no role flags at all, still means what it always meant: every
+// leaf's recorded model is the one --model named. wireSeams' fake branch used to hardcode
+// the literal "fake" here regardless of --model; if that regressed, this is what would
+// catch it.
+func TestModelAloneStillSetsEverySolverLeafWhenNoRoleFlagIsGiven(t *testing.T) {
+	dir := t.TempDir()
+	recPath := filepath.Join(dir, "r.json")
+	const marker = "plain-model-marker-v1"
+	err := runCmd(context.Background(), []string{
+		"--fake", "--quiet", "--cap", "0.25", "--depth", "2", "--model", marker,
+		"--out", recPath, gateQuestion,
+	})
+	if err != nil {
+		t.Fatalf("quarry run: %v", err)
+	}
+	rec, err := readRecord(recPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaves := 0
+	for _, o := range rec.Outcomes {
+		if o.Model == "" {
+			continue // internal node — used no model, per NodeOutcome's own convention
+		}
+		leaves++
+		if o.Model != marker {
+			t.Errorf("node %s: model = %q, want %q (plain --model with no role flags)", o.NodeID, o.Model, marker)
+		}
+	}
+	if leaves == 0 {
+		t.Fatal("the fixture must decompose into at least one leaf or this test pins nothing")
+	}
+}
+
+// TestFakeRunThreadsDistinctRoleModelsThroughTheSolverOutcome proves --model-solver takes
+// effect independent of --model-planner/--model-reducer, under --fake. It is the test
+// that motivated threading solverModel through wireSeams' fake branch instead of the
+// literal "fake": without that, this assertion is unreachable under --fake at all, which
+// is this project's own primary test harness.
+//
+// The planner/reducer markers are supplied ONLY to prove they do not cause a refusal or
+// otherwise misbehave — FakePlanner and ConcatReducer call no provider and carry no Model
+// field, so their effect is not separately observable here. The solver's is the only
+// assertion this test makes.
+func TestFakeRunThreadsDistinctRoleModelsThroughTheSolverOutcome(t *testing.T) {
+	dir := t.TempDir()
+	recPath := filepath.Join(dir, "r.json")
+	const solverMarker = "solver-marker-v1"
+	err := runCmd(context.Background(), []string{
+		"--fake", "--quiet", "--cap", "0.25", "--depth", "2",
+		"--model-planner", "planner-marker-v1",
+		"--model-solver", solverMarker,
+		"--model-reducer", "reducer-marker-v1",
+		"--out", recPath, gateQuestion,
+	})
+	if err != nil {
+		t.Fatalf("quarry run: %v", err)
+	}
+	rec, err := readRecord(recPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaves := 0
+	for _, o := range rec.Outcomes {
+		if o.Model == "" {
+			continue
+		}
+		leaves++
+		if o.Model != solverMarker {
+			t.Errorf("node %s: model = %q, want the SOLVER's role model %q, not the planner's or reducer's",
+				o.NodeID, o.Model, solverMarker)
+		}
+	}
+	if leaves == 0 {
+		t.Fatal("the fixture must decompose into at least one leaf or this test pins nothing")
+	}
+}
+
+// TestWireSeamsLiveConstructsEachRoleAtItsOwnModel calls wireSeams directly — legitimate
+// here since it is unexported but same-package callable, and the alternative (through
+// runCmd's live branch) would need real AWS credentials to reach a Converse call this
+// test has no need to make. It only asserts CONSTRUCTION: three distinct, individually
+// priced model strings land on three independent seams.
+//
+// Safe with no AWS credentials present: provider.NewBedrockProvider calls
+// awsconfig.LoadDefaultConfig, which only loads configuration — it does not authenticate,
+// confirmed by running it standalone with HOME pointed at an empty directory and no AWS
+// env vars set. No QUARRY_LIVE gate is needed for this reason alone.
+func TestWireSeamsLiveConstructsEachRoleAtItsOwnModel(t *testing.T) {
+	e := &quarry.Executor{}
+	const (
+		plannerModel = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+		solverModel  = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+		reducerModel = "us.meta.llama3-3-70b-instruct-v1:0"
+	)
+	if err := wireSeams(context.Background(), e, false, plannerModel, solverModel, reducerModel, "us-east-1", 0); err != nil {
+		t.Fatalf("wireSeams with three distinct, priced models: %v", err)
+	}
+	bp, ok := e.Planner.(*provider.BedrockPlanner)
+	if !ok || bp.Model != plannerModel {
+		t.Errorf("planner: got %#v, want Model = %q", e.Planner, plannerModel)
+	}
+	bs, ok := e.Solver.(provider.BudgetedSolver)
+	if !ok || bs.Model != solverModel {
+		t.Errorf("solver: got %#v, want Model = %q", e.Solver, solverModel)
+	}
+	br, ok := e.Reducer.(*provider.BedrockReducer)
+	if !ok || br.Model != reducerModel {
+		t.Errorf("reducer: got %#v, want Model = %q", e.Reducer, reducerModel)
+	}
+}
+
+// TestUnpricedModelOnOneRoleNamesThatRolesFlag: a refusal that says only "model" leaves a
+// caller running three different models guessing which one to fix. No --fake — the
+// price-sheet loop is in the live branch and refuses before any AWS call is reached.
+func TestUnpricedModelOnOneRoleNamesThatRolesFlag(t *testing.T) {
+	cases := []struct{ name, flag string }{
+		{"planner", "--model-planner"},
+		{"solver", "--model-solver"},
+		{"reducer", "--model-reducer"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			args := []string{c.flag, "totally-unpriced-model-vX", "--cap", "0.25", "--depth", "2", gateQuestion}
+			err := runCmd(context.Background(), args)
+			if err == nil {
+				t.Fatalf("%s at an unpriced model must be refused", c.flag)
+			}
+			if got := exitCode(err); got != exitUsage {
+				t.Errorf("want exit %d, got %d (%v)", exitUsage, got, err)
+			}
+			if !strings.Contains(err.Error(), c.flag) {
+				t.Errorf("refusal must name %s specifically, got %q", c.flag, err.Error())
+			}
+		})
 	}
 }
 

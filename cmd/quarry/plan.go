@@ -73,11 +73,16 @@ func planCmd(ctx context.Context, args []string) error {
 		due       = fs.String("due", "", "absolute RFC3339 deadline; the host owns the clock (#11 D2)")
 		depth     = fs.Int("depth", 3, "max recursion depth — a BACKSTOP, not the design (P2)")
 		fake      = fs.Bool("fake", false, "use the built-in fake planner: no credentials, no money")
-		model     = fs.String("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "explicit model version, never an alias (P8)")
-		region    = fs.String("region", "us-east-1", "AWS region for Bedrock")
-		scopeS    = fs.String("scope", "", "scope tags as k=v,k=v; the plan may not be executed under a WIDER scope (D2)")
-		out       = fs.String("out", "", "write the plan artifact here (default: quarry-plan-<hash>.json)")
-		planCapS  = fs.String("plan-cap", "0.01",
+		model     = fs.String("model", "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+			"explicit model version, never an alias (P8); the default for any role left unset")
+		// Only the planner role, deliberately: planSeams never wires a Solver or Reducer,
+		// so there is no --model-solver/--model-reducer for this verb to accept yet — that
+		// arrives with the plan-artifact fields that give them somewhere to go (design.md §2).
+		modelPlanner = fs.String("model-planner", "", "model for the planner role; falls back to --model")
+		region       = fs.String("region", "us-east-1", "AWS region for Bedrock")
+		scopeS       = fs.String("scope", "", "scope tags as k=v,k=v; the plan may not be executed under a WIDER scope (D2)")
+		out          = fs.String("out", "", "write the plan artifact here (default: quarry-plan-<hash>.json)")
+		planCapS     = fs.String("plan-cap", "0.01",
 			"the cap on PLANNING ITSELF (D4). one planner call is not free; this is its own budget, "+
 				"separate from --cap so planning cannot eat the run's")
 		samples = fs.Int("samples", 1,
@@ -157,7 +162,7 @@ func planCmd(ctx context.Context, args []string) error {
 	// Emitted as a DECLINED artifact rather than an error, which is D6 reaching a second
 	// case: the host gets something approvable that runs as a single node, and the
 	// reasoning says which bound produced it.
-	planner, planModel, meter, err := planSeams(ctx, *fake, *model, *region, planCap)
+	planner, planModel, meter, err := planSeams(ctx, *fake, resolveModel(modelPlanner, *model), *region, planCap)
 	if err != nil {
 		return err
 	}
@@ -274,7 +279,7 @@ func planOnce(ctx context.Context, planner quarry.Planner, p quarry.Problem, l *
 //
 // Returns the model name for the artifact and the meter for the cost, because D4's
 // number must be MEASURED at this seam and there is nowhere else it exists.
-func planSeams(ctx context.Context, fake bool, model, region string, planCap quarry.Units) (quarry.Planner, string, *provider.Meter, error) {
+func planSeams(ctx context.Context, fake bool, plannerModel, region string, planCap quarry.Units) (quarry.Planner, string, *provider.Meter, error) {
 	if fake {
 		fp := &provider.FakeProvider{Now: time.Now}
 		m := provider.NewMeter(fp, planCap)
@@ -286,19 +291,19 @@ func planSeams(ctx context.Context, fake bool, model, region string, planCap qua
 		return provider.FakePlanner{}, quarry.FakePlannerModel, m, nil
 	}
 	prices := planPrices()
-	if _, priced := prices[model]; !priced {
+	if _, priced := prices[plannerModel]; !priced {
 		// The same refusal wireSeams makes, and D4 sharpens it: an unpriced model reports
 		// every call as free, so PlanCost would state a MEASURED ZERO for a call that cost
 		// money — worse than an absent number, because the artifact carries it as a fact.
 		return nil, "", nil, usageErrf("no price sheet for model %q\n  an unpriced model reports every "+
-			"call as free, and D4 requires planning's cost to be a stated number (§8)", model)
+			"call as free, and D4 requires planning's cost to be a stated number (§8) (--model-planner)", plannerModel)
 	}
 	bp, err := provider.NewBedrockProvider(ctx, region, prices)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("build bedrock provider (is AWS_PROFILE set?): %w", err)
 	}
 	m := provider.NewMeter(bp, planCap)
-	return &provider.BedrockPlanner{Provider: m, Model: model, MaxItems: provider.DefaultMaxItems}, model, m, nil
+	return &provider.BedrockPlanner{Provider: m, Model: plannerModel, MaxItems: provider.DefaultMaxItems}, plannerModel, m, nil
 }
 
 // summarizePlan prints the gate: the split, WHERE THE MONEY GOES, and WHAT THE CAP
