@@ -41,7 +41,8 @@ func artifactFor(t *testing.T, p Problem, caps Caps, plan Plan, depth int) PlanA
 	}
 	mean, varc := PlanMoments(plan)
 	return NewPlanArtifact(p, caps, 0, depth, plan, allocs,
-		Project(mean, varc, depth, FromFloat(0.01)), 0, FromFloat(0.01), FakePlannerModel)
+		Project(mean, varc, depth, FromFloat(0.01)), 0, FromFloat(0.01),
+		FakePlannerModel, FakePlannerModel, FakePlannerModel)
 }
 
 func planCaps(spend Units) Caps { return Caps{Spend: spend, Latency: time.Hour} }
@@ -55,10 +56,10 @@ func TestPlanIsOnlyValidForTheCapItWasPlannedUnder(t *testing.T) {
 	p := problem("root")
 	art := artifactFor(t, p, planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
 
-	if err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 2, FakePlannerModel); err != nil {
+	if err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); err != nil {
 		t.Fatalf("the cap it was planned under must be authorized: %v", err)
 	}
-	err := art.Authorizes(p, planCaps(FromFloat(0.5)), 0, 2, FakePlannerModel)
+	err := art.Authorizes(p, planCaps(FromFloat(0.5)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel)
 	if !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("half the cap must be refused, got %v", err)
 	}
@@ -66,7 +67,7 @@ func TestPlanIsOnlyValidForTheCapItWasPlannedUnder(t *testing.T) {
 	// tempting to allow it as "surely safe", but a planner given twice the balance might
 	// have proposed a wider split, so executing the narrow one silently under-uses an
 	// approval the operator granted for a different plan. The refusal says re-plan.
-	if err := art.Authorizes(p, planCaps(FromFloat(2)), 0, 2, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
+	if err := art.Authorizes(p, planCaps(FromFloat(2)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("a LARGER cap must also be refused (the plan is conditioned on its own), got %v", err)
 	}
 }
@@ -76,7 +77,7 @@ func TestPlanIsOnlyValidForTheCapItWasPlannedUnder(t *testing.T) {
 func TestPlanRefusesADifferentDeadline(t *testing.T) {
 	p := problem("root")
 	art := artifactFor(t, p, Caps{Spend: FromFloat(1), Latency: time.Hour}, fanoutPlan("a", "b"), 2)
-	err := art.Authorizes(p, Caps{Spend: FromFloat(1), Latency: time.Second}, 0, 2, FakePlannerModel)
+	err := art.Authorizes(p, Caps{Spend: FromFloat(1), Latency: time.Second}, 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel)
 	if !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("a different latency cap must be refused, got %v", err)
 	}
@@ -87,7 +88,7 @@ func TestPlanRefusesADifferentDeadline(t *testing.T) {
 func TestPlanRefusesADifferentFloor(t *testing.T) {
 	p := problem("root")
 	art := artifactFor(t, p, planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
-	if err := art.Authorizes(p, planCaps(FromFloat(1)), FromFloat(0.01), 2, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
+	if err := art.Authorizes(p, planCaps(FromFloat(1)), FromFloat(0.01), 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatal("a different floor must be refused: it changes where the money goes")
 	}
 }
@@ -95,7 +96,7 @@ func TestPlanRefusesADifferentFloor(t *testing.T) {
 func TestPlanRefusesADifferentDepthBound(t *testing.T) {
 	p := problem("root")
 	art := artifactFor(t, p, planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
-	if err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 5, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
+	if err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 5, FakePlannerModel, FakePlannerModel, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatal("a different depth bound must be refused: the tree approved was bounded by it (P2)")
 	}
 }
@@ -106,16 +107,114 @@ func TestPlanRefusesADifferentDepthBound(t *testing.T) {
 func TestPlanRefusesASyntheticPlanExecutedWithRealMoney(t *testing.T) {
 	p := problem("root")
 	art := artifactFor(t, p, planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
-	err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 2, "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+	err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 2,
+		"us.anthropic.claude-haiku-4-5-20251001-v1:0", FakePlannerModel, FakePlannerModel)
 	if !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("a fake plan must not authorize a live run, got %v", err)
 	}
 	// And the reverse: a plan bought with real money must not be executed by the fake
 	// planner either, or a --fake run would inherit an approval priced in real Units.
 	live := NewPlanArtifact(p, planCaps(FromFloat(1)), 0, 2, fanoutPlan("a", "b"), nil,
-		CostEstimate{}, 0, 0, "us.anthropic.claude-haiku-4-5-20251001-v1:0")
-	if err := live.Authorizes(p, planCaps(FromFloat(1)), 0, 2, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
+		CostEstimate{}, 0, 0, "us.anthropic.claude-haiku-4-5-20251001-v1:0", FakePlannerModel, FakePlannerModel)
+	if err := live.Authorizes(p, planCaps(FromFloat(1)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatal("a live plan must not authorize a fake run")
+	}
+}
+
+// ------------------------------------------------------------ #30: solver/reducer models
+
+// A plan approved assuming one solver silently executed against another is the same
+// cap-integrity break as a different cap (D1), one layer over: the split is the same,
+// but what answers it is not what was approved.
+//
+// UNLIKE THE PLANNER'S MODEL, this is an EXACT match, not a fake/live bucket. The
+// planner's model only affects how the split was proposed, and the mechanical checks
+// above already re-verify the apportionment independent of it — below the approved
+// root, choosing which live planner is not the gate's business. The solver's model
+// affects what the answer is MADE OF, so there is no equivalent "it doesn't matter
+// which" reasoning available here.
+func TestPlanRefusesARunWhoseSolverModelDiffersFromWhatWasApproved(t *testing.T) {
+	p := problem("root")
+	art := NewPlanArtifact(p, planCaps(FromFloat(1)), 0, 2, fanoutPlan("a", "b"), nil,
+		CostEstimate{}, 0, 0, FakePlannerModel, "approved-solver", "approved-reducer")
+
+	if err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 2,
+		FakePlannerModel, "approved-solver", "approved-reducer"); err != nil {
+		t.Fatalf("the exact solver/reducer models it was planned with must be authorized: %v", err)
+	}
+	err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 2,
+		FakePlannerModel, "a-cheaper-solver", "approved-reducer")
+	if !errors.Is(err, ErrPlanNotAuthorized) {
+		t.Fatalf("a DIFFERENT solver model must be refused, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "approved-solver") || !strings.Contains(err.Error(), "a-cheaper-solver") {
+		t.Errorf("the refusal must name BOTH the approved and the asked-for solver, got %q", err.Error())
+	}
+}
+
+func TestPlanRefusesARunWhoseReducerModelDiffersFromWhatWasApproved(t *testing.T) {
+	p := problem("root")
+	art := NewPlanArtifact(p, planCaps(FromFloat(1)), 0, 2, fanoutPlan("a", "b"), nil,
+		CostEstimate{}, 0, 0, FakePlannerModel, "approved-solver", "approved-reducer")
+
+	err := art.Authorizes(p, planCaps(FromFloat(1)), 0, 2,
+		FakePlannerModel, "approved-solver", "a-different-reducer")
+	if !errors.Is(err, ErrPlanNotAuthorized) {
+		t.Fatalf("a DIFFERENT reducer model must be refused, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "approved-reducer") || !strings.Contains(err.Error(), "a-different-reducer") {
+		t.Errorf("the refusal must name BOTH the approved and the asked-for reducer, got %q", err.Error())
+	}
+}
+
+// BACKWARD COMPATIBILITY, against an artifact captured BEFORE these fields existed
+// (testdata/plan-pre-solverreducermodel.json, written by the v0.1.0 binary before #30).
+// omitempty is what makes this hold: an unconditional field would add
+// `"SolverModel":""` and `"ReducerModel":""` to every artifact's canonical bytes, and
+// every artifact anyone already has on disk would stop hashing to its own PlanID —
+// worse than a stale record, since DecodePlanArtifact REFUSES an artifact that fails
+// its own hash (Verify), unlike readRecord's warn-and-continue.
+//
+// The fixture is a REAL pre-change artifact — `quarry plan --fake` at the commit before
+// #30 — rather than a hand-built one, for the same reason record-pre-planid.json is: a
+// test that constructs the state it means to detect cannot discover that nothing
+// produces it.
+func TestAPreExistingArtifactStillHashesToItsOwnPlanID(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "plan-pre-solverreducermodel.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// It does not mention either field, because the code that wrote it had never heard
+	// of them.
+	if strings.Contains(string(b), "SolverModel") || strings.Contains(string(b), "ReducerModel") {
+		t.Fatal("fixture is not a pre-change artifact — recapture it from a commit before " +
+			"#30, or this test is comparing today's code with itself")
+	}
+
+	// DecodePlanArtifact, not a bare json.Unmarshal: THE GUARANTEE is that this artifact
+	// still VERIFIES — a caller that can only get an unverified value here would be the
+	// exact gap #30 must not open, since every plan artifact ever written under v0.1.0
+	// predates these two fields.
+	art, err := DecodePlanArtifact(b)
+	if err != nil {
+		t.Fatalf("a plan artifact written before SolverModel/ReducerModel existed must still "+
+			"verify: %v — omitempty is what makes that true, and without it every artifact "+
+			"anyone already has is reported as tampered (P8)", err)
+	}
+	if art.SolverModel != "" || art.ReducerModel != "" {
+		t.Fatal("an artifact written before the gate existed cannot name an expected solver or reducer")
+	}
+
+	// AND THE UNSET-MEANS-SKIP HALF: Authorizes must not refuse a run of this OLD
+	// artifact merely because the run resolved real solver/reducer models — the
+	// artifact never stated an expectation, so there is nothing to compare against.
+	// This is the case a version bump to PlanArtifactVersion would NOT have caught:
+	// the artifact still verifies and still authorizes, exactly as the "adding a field
+	// is a minor change a v1 reader ignores" rule promises.
+	if err := art.Authorizes(art.Problem, art.Caps, art.Floor, art.Depth,
+		art.PlannerModel, "some-solver-the-old-plan-never-considered", "some-reducer-either"); err != nil {
+		t.Fatalf("an artifact predating SolverModel/ReducerModel must authorize ANY run's "+
+			"resolved models, since it recorded no expectation to compare against: %v", err)
 	}
 }
 
@@ -150,14 +249,14 @@ func TestCapsSameAsAcceptsTwoSpellingsOfOneInstant(t *testing.T) {
 	}
 
 	p := Problem{Statement: "root"}
-	art := NewPlanArtifact(p, plannedCaps, 0, 2, fanoutPlan("a", "b"), nil, CostEstimate{}, 0, 0, FakePlannerModel)
-	if err := art.Authorizes(p, askedCaps, 0, 2, FakePlannerModel); err != nil {
+	art := NewPlanArtifact(p, plannedCaps, 0, 2, fanoutPlan("a", "b"), nil, CostEstimate{}, 0, 0, FakePlannerModel, FakePlannerModel, FakePlannerModel)
+	if err := art.Authorizes(p, askedCaps, 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); err != nil {
 		t.Fatalf("the same deadline spelled differently must still be authorized: %v", err)
 	}
 	// A DIFFERENT instant is still refused — the tolerance is about spelling, not about
 	// deadlines being negotiable.
 	later := Caps{Spend: FromFloat(1), Due: planned.Add(time.Hour)}
-	if err := art.Authorizes(p, later, 0, 2, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
+	if err := art.Authorizes(p, later, 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("a genuinely different due date must be refused, got %v", err)
 	}
 }
@@ -167,7 +266,7 @@ func TestCapsSameAsAcceptsTwoSpellingsOfOneInstant(t *testing.T) {
 func TestARoundTrippedArtifactStillAuthorizesItsOwnConditions(t *testing.T) {
 	p := Problem{Statement: "root"}
 	caps := Caps{Spend: FromFloat(1), Due: time.Date(2026, 8, 6, 17, 0, 0, 0, time.UTC)}
-	art := NewPlanArtifact(p, caps, 0, 2, fanoutPlan("a", "b"), nil, CostEstimate{}, 0, 0, FakePlannerModel)
+	art := NewPlanArtifact(p, caps, 0, 2, fanoutPlan("a", "b"), nil, CostEstimate{}, 0, 0, FakePlannerModel, FakePlannerModel, FakePlannerModel)
 
 	b, err := art.Canonical()
 	if err != nil {
@@ -177,7 +276,7 @@ func TestARoundTrippedArtifactStillAuthorizesItsOwnConditions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := back.Authorizes(p, caps, 0, 2, FakePlannerModel); err != nil {
+	if err := back.Authorizes(p, caps, 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); err != nil {
 		t.Fatalf("a round-tripped artifact must still authorize its own conditions: %v", err)
 	}
 }
@@ -192,7 +291,7 @@ func TestPlanRefusesAWidenedScope(t *testing.T) {
 
 	// Dropping a tag WIDENS: the run would reach material the approved plan could not.
 	wider := Problem{Statement: "root", Scope: Scope{Tags: map[string]string{"team": "a"}}}
-	err := art.Authorizes(wider, planCaps(FromFloat(1)), 0, 2, FakePlannerModel)
+	err := art.Authorizes(wider, planCaps(FromFloat(1)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel)
 	if !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("dropping a scope tag must be refused, got %v", err)
 	}
@@ -205,14 +304,14 @@ func TestPlanRefusesAWidenedScope(t *testing.T) {
 	// NARROWING is allowed, in the direction Ledger.Child already enforces.
 	narrower := Problem{Statement: "root", Scope: Scope{Tags: map[string]string{
 		"team": "a", "project": "x", "dataset": "d"}}}
-	if err := art.Authorizes(narrower, planCaps(FromFloat(1)), 0, 2, FakePlannerModel); err != nil {
+	if err := art.Authorizes(narrower, planCaps(FromFloat(1)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel); err != nil {
 		t.Fatalf("narrowing the scope must be allowed (P6 forbids widening only): %v", err)
 	}
 }
 
 func TestPlanRefusesADifferentProblem(t *testing.T) {
 	art := artifactFor(t, problem("what does storage cost"), planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
-	err := art.Authorizes(problem("what does compute cost"), planCaps(FromFloat(1)), 0, 2, FakePlannerModel)
+	err := art.Authorizes(problem("what does compute cost"), planCaps(FromFloat(1)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel)
 	if !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("a plan for another statement must be refused, got %v", err)
 	}
@@ -238,7 +337,7 @@ func TestTheProblemMismatchShowsWhereTheStatementsDiverge(t *testing.T) {
 	asked := strings.TrimSuffix(planned, "?") // one byte, past any 60-char prefix window
 
 	art := artifactFor(t, problem(planned), planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
-	err := art.Authorizes(problem(asked), planCaps(FromFloat(1)), 0, 2, FakePlannerModel)
+	err := art.Authorizes(problem(asked), planCaps(FromFloat(1)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel)
 	if !errors.Is(err, ErrPlanNotAuthorized) {
 		t.Fatalf("a trailing-byte difference is still a different problem, got %v", err)
 	}
@@ -268,7 +367,7 @@ func TestTheMismatchMessageClipsOnRuneBoundaries(t *testing.T) {
 	asked := strings.Repeat("café… ", 20) + "beta"
 
 	art := artifactFor(t, problem(planned), planCaps(FromFloat(1)), fanoutPlan("a", "b"), 2)
-	err := art.Authorizes(problem(asked), planCaps(FromFloat(1)), 0, 2, FakePlannerModel)
+	err := art.Authorizes(problem(asked), planCaps(FromFloat(1)), 0, 2, FakePlannerModel, FakePlannerModel, FakePlannerModel)
 	if err == nil {
 		t.Fatal("statements differing in their tail must be refused")
 	}
@@ -705,7 +804,8 @@ func TestApportionCollapsesTheSameDuplicatesTheExecutorWill(t *testing.T) {
 	}
 	mean, varc := PlanMoments(dup)
 	art := NewPlanArtifact(p, caps, 0, 2, dup, stored,
-		Project(mean, varc, 2, FromFloat(0.01)), 0, FromFloat(0.01), FakePlannerModel)
+		Project(mean, varc, 2, FromFloat(0.01)), 0, FromFloat(0.01),
+		FakePlannerModel, FakePlannerModel, FakePlannerModel)
 
 	fresh, err := NewLedger(caps, p.Scope)
 	if err != nil {

@@ -161,6 +161,28 @@ type PlanArtifact struct {
 	// Authorizes can refuse a synthetic plan being executed with real money: the two
 	// modes' Units are not the same quantity.
 	PlannerModel string
+
+	// SolverModel and ReducerModel are the models a run executing this plan is
+	// EXPECTED to use — declared intent, not measurement, since planning never calls
+	// either seam (planSeams wires only the Planner). They exist because
+	// PlannerModel's own check does not generalize to them: Authorizes deliberately
+	// does not pin WHICH live planner model was used, because a planner's model only
+	// affects how the split was PROPOSED, and the mechanical checks above already
+	// re-verify the apportionment independent of it. A solver or reducer's model
+	// affects what the ANSWER IS MADE OF — a plan approved assuming a strong,
+	// expensive solver, silently executed against a cheap one, is exactly the
+	// "same split, different money" substitution D1 exists to catch, one layer over
+	// from cap.
+	//
+	// `omitempty` IS LOAD-BEARING, same reason as RunRecord.PlanID/Producer: an
+	// artifact written before these fields existed (every artifact from the v0.1.0
+	// release) carries them as the zero value, which Authorizes must read as
+	// UNRECORDED rather than as an empty string to compare against — see the
+	// unset-means-skip comment there. testdata/plan-pre-solverreducermodel.json is
+	// the captured witness that adding them did not change what that artifact hashes
+	// to.
+	SolverModel  string `json:"SolverModel,omitempty"`
+	ReducerModel string `json:"ReducerModel,omitempty"`
 }
 
 // NewPlanArtifact assembles an artifact and seals it with its content hash.
@@ -169,8 +191,13 @@ type PlanArtifact struct {
 // the scope, the weights and the apportionment together. Sealing the plan without
 // the cap would produce an artifact that authorizes the same split under any budget,
 // which is precisely what D1 forbids.
+//
+// solverModel and reducerModel travel alongside plannerModel as three consecutive
+// string params, same shape as wireSeams' three role models (#29) — they document
+// themselves at the call site without needing a struct, and planCmd is their only
+// caller.
 func NewPlanArtifact(p Problem, caps Caps, floor Units, depth int, plan Plan, allocs []Allocation,
-	est CostEstimate, planCost, planCap Units, plannerModel string) PlanArtifact {
+	est CostEstimate, planCost, planCap Units, plannerModel, solverModel, reducerModel string) PlanArtifact {
 	a := PlanArtifact{
 		Version:        PlanArtifactVersion,
 		Problem:        p,
@@ -184,6 +211,8 @@ func NewPlanArtifact(p Problem, caps Caps, floor Units, depth int, plan Plan, al
 		PlanCost:       planCost,
 		PlanCap:        planCap,
 		PlannerModel:   plannerModel,
+		SolverModel:    solverModel,
+		ReducerModel:   reducerModel,
 	}
 	a.PlanID = planHash(a)
 	return a
@@ -352,8 +381,21 @@ func quoteAround(s, other string) string {
 // THE MODEL MODE IS CHECKED TOO, and it belongs to D1 rather than being a new rule.
 // A --fake plan's Units are synthetic; executing it with real money would compare a
 // synthetic budget against a real one and call them equal, which is the cap-integrity
-// property D1 exists to protect, arriving from an unexpected direction.
-func (a PlanArtifact) Authorizes(p Problem, caps Caps, floor Units, depth int, plannerModel string) error {
+// property D1 exists to protect, arriving from an unexpected direction. This is a
+// BUCKET check (fake vs. live), not an exact match — below the approved root the
+// planner is the run's own, and choosing WHICH live model is not the gate's business.
+//
+// SolverModel and ReducerModel ARE checked exactly, and deliberately not by the same
+// reasoning as the planner's. The planner's model only affects how the split was
+// PROPOSED — the mechanical apportionment checks above re-verify the result
+// independent of it. The solver's and reducer's models affect what the answer is MADE
+// OF, so a plan approved assuming one and silently executed against another is the
+// same "same split, different money" substitution D1 exists to catch. An artifact
+// written before these two fields existed carries them empty, which Authorizes reads
+// as UNRECORDED and skips — never as a live wildcard a caller could set to "" to
+// bypass the check on a NEW artifact, since a fresh artifact from NewPlanArtifact
+// always states both.
+func (a PlanArtifact) Authorizes(p Problem, caps Caps, floor Units, depth int, plannerModel, solverModel, reducerModel string) error {
 	if a.Problem.Statement != p.Statement {
 		// SHOWN FROM WHERE THEY DIVERGE, not from the start. A plain %.60q truncated both
 		// sides to a COMMON PREFIX and printed two identical-looking lines under the words
@@ -398,6 +440,19 @@ func (a PlanArtifact) Authorizes(p Problem, caps Caps, floor Units, depth int, p
 		return fmt.Errorf("%w: the plan was proposed by %q and the run's planner is %q\n"+
 			"  a synthetic plan's costs are synthetic, so its cap is not the same quantity as a "+
 			"real one (D1)", ErrPlanNotAuthorized, a.PlannerModel, plannerModel)
+	}
+	// Unset on the ARTIFACT means unrecorded (an artifact predating these fields), not
+	// unconstrained — so the comparison is skipped only when the artifact itself never
+	// stated a value, never when the RUN's side happens to be empty.
+	if a.SolverModel != "" && a.SolverModel != solverModel {
+		return fmt.Errorf("%w: the plan assumed a solver of %q, the run's is %q\n"+
+			"  a plan approved for one solver quality executed against another is the same "+
+			"cap-integrity break as a different cap (D1)", ErrPlanNotAuthorized, a.SolverModel, solverModel)
+	}
+	if a.ReducerModel != "" && a.ReducerModel != reducerModel {
+		return fmt.Errorf("%w: the plan assumed a reducer of %q, the run's is %q\n"+
+			"  a plan approved for one reducer quality executed against another is the same "+
+			"cap-integrity break as a different cap (D1)", ErrPlanNotAuthorized, a.ReducerModel, reducerModel)
 	}
 	return nil
 }

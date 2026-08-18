@@ -157,10 +157,17 @@ func runCmd(ctx context.Context, args []string) error {
 		if *fake {
 			effectivePlannerModel = quarry.FakePlannerModel
 		}
+		// solverModel/reducerModel are NOT bucketed to a fake marker under --fake, unlike
+		// the planner: #29 threads a real resolved model string through BudgetedSolver
+		// even in fake mode (it is what makes --model-solver observable there at all), so
+		// the artifact's declared SolverModel/ReducerModel and the run's resolved values
+		// are the same kind of thing in both modes.
+		//
 		// D1 and D2, in one call: the cap, the scope, the floor, the depth and the model
 		// mode. A usage error rather than a fault — nothing ran, and the caller can fix it
 		// by matching the flags or re-planning.
-		if aerr := art.Authorizes(quarry.Problem{Statement: statement, Scope: scope}, caps, floor, cfg.Depth, effectivePlannerModel); aerr != nil {
+		if aerr := art.Authorizes(quarry.Problem{Statement: statement, Scope: scope}, caps, floor, cfg.Depth,
+			effectivePlannerModel, solverModel, reducerModel); aerr != nil {
 			return usageErrf("%w", aerr)
 		}
 		// The approved apportionment, re-derived through THIS ledger and checked against
